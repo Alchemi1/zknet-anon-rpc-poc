@@ -11,19 +11,21 @@ Browser (Anon-RPC demo page)
   │   → sandboxed Web Worker
   │   → kps.dial("HOST_IP:9201:uEi...")
   │
-  ├──── KPS stream (WebRTC from browser, QUIC from native) ────┐
-  │                                                              │
-  walletshield (Go binary)                                       │
-  ├── HTTP listener :9200 (curl, legacy)                         │
-  ├── KPS listener  :9201 (NEW — kps.Listen from Go lib)        │
-  ├── thin client → kpclientd (TCP 64332)                       │
-  │                                                              │
-  Docker (mixnet core)                                           │
-  ├── mix-dirauth-1/2/3  — PKI consensus                        │
-  ├── mix-1/2/3          — Sphinx mix nodes                     │
-  ├── mix-gateway        — Client entry point                   │
-  ├── mix-servicenode    — Exit node (http-proxy Kaetzchen)     │
-  └── mix-client         — kpclientd daemon                     │
+  ├──── KPS stream (WebRTC from browser, QUIC from native) 
+  │                                                           
+  │  walletshield (Go binary)                                  
+  ├── HTTP listener :9200 (curl, legacy)                       
+  ├── KPS listener  :9201 (NEW — kps.Listen from Go lib)       
+  ├── thin client → kpclientd (TCP 64332)                      
+  │                                                            
+  │  Docker (mixnet core)                                      
+  ├── mix-dirauth-1/2/3  — PKI consensus                       
+  ├── mix-1/2/3          — Sphinx mix nodes                    
+  ├── mix-gateway        — Client entry point                  
+  ├── mix-servicenode    — Exit node (http-proxy Kaetzchen)    
+  └── mix-client         — kpclientd daemon                    
+  
+
 ```
 
 ## Directory Structure
@@ -325,4 +327,4 @@ rm -f walletshield/kps.key walletshield/kps.key.pub
 - KPS library: https://github.com/privacy-ethereum/kps
 - Katzenpost: https://github.com/katzenpost/katzenpost
 - ZKNetwork opt repo: https://github.com/ZeroKnowledgeNetwork/opt
-- zknode-autonomi-v1: Hardware stack with full mixnet deployment
+- zknode-HSM-v.01: Hardware stack with full mixnet deployment
