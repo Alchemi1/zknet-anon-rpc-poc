@@ -1,0 +1,100 @@
+services:
+  mix-dirauth-1:
+    image: zeros/mixnet-node:amd64
+    container_name: mix-dirauth-1
+    command: sh -c "while true; do /usr/local/bin/dirauth -f /var/lib/katzenpost/auth1/authority.toml; sleep 2; done"
+    volumes:
+      - ./config/mixnet:/var/lib/katzenpost
+    network_mode: host
+    restart: unless-stopped
+
+  mix-dirauth-2:
+    image: zeros/mixnet-node:amd64
+    container_name: mix-dirauth-2
+    command: sh -c "while true; do /usr/local/bin/dirauth -f /var/lib/katzenpost/auth2/authority.toml; sleep 2; done"
+    volumes:
+      - ./config/mixnet:/var/lib/katzenpost
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [mix-dirauth-1]
+
+  mix-dirauth-3:
+    image: zeros/mixnet-node:amd64
+    container_name: mix-dirauth-3
+    command: sh -c "while true; do /usr/local/bin/dirauth -f /var/lib/katzenpost/auth3/authority.toml; sleep 2; done"
+    volumes:
+      - ./config/mixnet:/var/lib/katzenpost
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [mix-dirauth-2]
+
+  mix-1:
+    image: zeros/mixnet-node:amd64
+    container_name: mix-1
+    command: /usr/local/bin/server -f /var/lib/katzenpost/mix1/katzenpost.toml
+    volumes:
+      - ./config/mixnet:/var/lib/katzenpost
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [mix-dirauth-1, mix-dirauth-2, mix-dirauth-3]
+
+  mix-2:
+    image: zeros/mixnet-node:amd64
+    container_name: mix-2
+    command: /usr/local/bin/server -f /var/lib/katzenpost/mix2/katzenpost.toml
+    volumes:
+      - ./config/mixnet:/var/lib/katzenpost
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [mix-dirauth-1, mix-dirauth-2, mix-dirauth-3]
+
+  mix-3:
+    image: zeros/mixnet-node:amd64
+    container_name: mix-3
+    command: /usr/local/bin/server -f /var/lib/katzenpost/mix3/katzenpost.toml
+    volumes:
+      - ./config/mixnet:/var/lib/katzenpost
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [mix-dirauth-1, mix-dirauth-2, mix-dirauth-3]
+
+  mix-gateway:
+    image: zeros/mixnet-node:amd64
+    container_name: mix-gateway
+    command: /usr/local/bin/server -f /var/lib/katzenpost/gateway1/katzenpost.toml
+    volumes:
+      - ./config/mixnet:/var/lib/katzenpost
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [mix-1, mix-2, mix-3]
+
+  mix-servicenode:
+    image: zeros/mixnet-node:amd64
+    container_name: mix-servicenode
+    entrypoint: ["/servicenode-entrypoint.sh"]
+    volumes:
+      - ./config/mixnet:/var/lib/katzenpost
+      - ./config/mixnet/servicenode-entrypoint.sh:/servicenode-entrypoint.sh:ro
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [mix-1, mix-2, mix-3]
+
+  mix-client:
+    image: zeros/mixnet-node:amd64
+    container_name: mix-client
+    command: >
+      sh -c "
+        kpclientd -c /var/lib/katzenpost/client/client.toml & PID=\$!;
+        echo 'Waiting for PKI doc...';
+        for i in \$(seq 1 30); do
+          /usr/local/bin/fetch -f /var/lib/katzenpost/client/thinclient.toml && break;
+          sleep 2;
+        done;
+        echo 'PKI doc available';
+        wait \$PID
+      "
+    volumes:
+      - ./config/mixnet:/var/lib/katzenpost
+    network_mode: host
+    restart: unless-stopped
+    depends_on: [mix-gateway]

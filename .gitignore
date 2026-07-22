@@ -1,0 +1,19 @@
+# Build artifacts
+walletshield/walletshield-kps
+zkn-anon-rpc-worker/dist/
+zkn-anon-rpc-worker/node_modules/
+
+# Auto-generated
+walletshield/kps.key
+walletshield/kps.key.pub
+config/mixnet/pkidata/
+config/mixnet/auth*/
+config/mixnet/mix*/
+config/mixnet/gateway1/
+config/mixnet/servicenode1/
+
+# Env
+.env
+
+# Logs
+*.log

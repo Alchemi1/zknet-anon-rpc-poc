@@ -1,0 +1,12 @@
+{
+  "name": "zkn-anon-rpc-worker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "esbuild zkn-walletshield-worker.js --bundle --minify --outfile=dist/worker.js",
+    "hash": "openssl dgst -sha256 -binary dist/worker.js | xxd -p -c 64"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}
