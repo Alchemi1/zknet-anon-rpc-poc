@@ -1,6 +1,6 @@
 module github.com/ZeroKnowledgeNetwork/opt/apps/walletshield
 
-go 1.26
+go 1.22
 
 require (
 	github.com/BurntSushi/toml v1.5.0
@@ -57,4 +57,4 @@ require (
 	google.golang.org/protobuf v1.36.6 // indirect
 )
 
-replace github.com/katzenpost/katzenpost => ../katzenpost
+replace github.com/katzenpost/katzenpost => /home/alchemical1/zknode-autonomi-v1/katzenpost
