@@ -4,12 +4,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential git ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy entire repo
 COPY . /src/
 
-# Build walletshield with local katzenpost replace directive
 WORKDIR /src/walletshield
-RUN go mod tidy 2>&1 | tail -5 && \
+
+ENV GONOSUMCHECK=*
+ENV GONOSUMDB=*
+ENV GOFLAGS=-mod=mod
+
+RUN go mod tidy 2>&1 && \
     go build -trimpath -ldflags="-buildid=" -o /walletshield . 2>&1
 
 FROM debian:trixie-slim

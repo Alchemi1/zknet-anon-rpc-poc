@@ -4,34 +4,37 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"math/rand"
 	"net/http"
-	"net/url"
+	"net/http/httputil"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/log"
+	cbor "github.com/fxamacker/cbor/v2"
+	"github.com/katzenpost/hpqc/hash"
 	kps "github.com/privacy-ethereum/kps/libs/go"
 
 	"github.com/katzenpost/katzenpost/client/config"
 	"github.com/katzenpost/katzenpost/client/thin"
+	proxycommon "github.com/katzenpost/katzenpost/quic/proxy/common"
 )
 
 var (
 	timeout          = 120
-	ProxyHTTPService = "proxy"
+	ProxyHTTPService = "http_proxy"
 
 	UserForwardPayloadLength = 2000
 	thinClientOnly           = true
 	contractAddr             = ""
+	configPath               = ""
 )
 
 type Server struct {
@@ -42,13 +45,19 @@ type Server struct {
 	mu         sync.Mutex
 }
 
+func (s *Server) logInfof(format string, args ...interface{})  { s.log.Printf("INFO: "+format, args...) }
+func (s *Server) logWarnf(format string, args ...interface{})  { s.log.Printf("WARN: "+format, args...) }
+func (s *Server) logErrorf(format string, args ...interface{}) { s.log.Printf("ERROR: "+format, args...) }
+func (s *Server) logDebugf(format string, args ...interface{}) { s.log.Printf("DEBUG: "+format, args...) }
+func (s *Server) logFatalf(format string, args ...interface{}) { s.log.Fatalf("FATAL: "+format, args...) }
+
 func (s *Server) reconnect() *thin.ThinClient {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	cfgThin, err := thin.LoadFile(s.configPath)
 	if err != nil {
-		s.log.Errorf("Failed to load config for reconnect: %s", err)
+		s.logErrorf("Failed to load config for reconnect: %s", err)
 		return s.thin
 	}
 
@@ -59,12 +68,12 @@ func (s *Server) reconnect() *thin.ThinClient {
 	client := thin.NewThinClient(cfgThin, logging)
 	err = client.Dial()
 	if err != nil {
-		s.log.Errorf("Failed to reconnect: %s", err)
+		s.logErrorf("Failed to reconnect: %s", err)
 		return s.thin
 	}
 	s.thin.Close()
 	s.thin = client
-	s.log.Info("Reconnected to client daemon")
+	s.logInfof("Reconnected to client daemon")
 	return client
 }
 
@@ -78,8 +87,6 @@ func main() {
 	var logLevel string
 	var listenAddr string
 	var kpsListenAddr string
-	var listenAddrClient string
-	var configPath string
 	var delayStart int
 	var testProbe bool
 	var testProbeCount int
@@ -91,7 +98,6 @@ func main() {
 	flag.StringVar(&logLevel, "log_level", "DEBUG", "logging level")
 	flag.StringVar(&listenAddr, "listen", "", "local socket to listen HTTP on")
 	flag.StringVar(&kpsListenAddr, "kps_listen", "", "KPS listen address (e.g. 0.0.0.0:9201)")
-	flag.StringVar(&listenAddrClient, "listen_client", "", "local network address for the client daemon")
 	flag.BoolVar(&thinClientOnly, "thin", true, "use thin client mode")
 	flag.BoolVar(&testProbe, "probe", false, "send test probes instead of handling requests")
 	flag.IntVar(&testProbeCount, "probe_count", 1, "number of test probes to send")
@@ -108,18 +114,12 @@ func main() {
 		panic("config flag must be set")
 	}
 
-	level, err := log.ParseLevel(logLevel)
-	if err != nil {
-		panic(err)
-	}
-	mylog := log.NewWithOptions(os.Stdout, log.Options{
-		Prefix: "walletshield:",
-		Level:  level,
-	})
+	level := logLevel
+	mylog := log.New(os.Stdout, "walletshield: ", log.LstdFlags|log.Lshortfile)
 
 	if delayStart > 0 {
 		d := rand.Intn(delayStart)
-		mylog.Infof("Delaying start for %d seconds...", d)
+		mylog.Printf("INFO: Delaying start for %d seconds...", d)
 		time.Sleep(time.Duration(d) * time.Second)
 	}
 
@@ -128,13 +128,9 @@ func main() {
 		panic(fmt.Errorf("failed to load thin client config: %s", err))
 	}
 
-	if listenAddrClient != "" {
-		cfgThin.Address = listenAddrClient
-	}
-
 	logging := &config.Logging{
 		Disable: false,
-		Level:   level.String(),
+		Level:   level,
 	}
 
 	thinClient := thin.NewThinClient(cfgThin, logging)
@@ -147,7 +143,7 @@ func main() {
 		log:        mylog,
 		thin:       thinClient,
 		configPath: configPath,
-		logLevel:   level.String(),
+		logLevel:   level,
 	}
 
 	go func() {
@@ -160,13 +156,13 @@ func main() {
 				if v.IsConnected {
 					everConnected = true
 				} else if everConnected {
-					mylog.Warn("Connection lost, attempting reconnect...")
+					mylog.Printf("WARN: Connection lost, attempting reconnect...")
 					server.reconnect()
 					everConnected = false
 				}
 			}
 		}
-		mylog.Warn("Event sink closed, connection to daemon may be lost")
+		mylog.Printf("WARN: Event sink closed, connection to daemon may be lost")
 	}()
 
 	// Start KPS listener alongside HTTP
@@ -183,30 +179,33 @@ func main() {
 }
 
 func (s *Server) Handler(w http.ResponseWriter, req *http.Request) {
-	s.log.Infof("Received HTTP request for %s", req.URL)
+	s.logInfof("Received HTTP request for %s", req.URL)
 
-	myurl, err := url.Parse(req.RequestURI)
+	if req.URL.Host == "" {
+		req.URL.Host = req.Host
+	}
+	if req.URL.Scheme == "" {
+		req.URL.Scheme = "https"
+	}
+
+	serialized, err := httputil.DumpRequest(req, true)
 	if err != nil {
-		s.log.Errorf("url.Parse(req.RequestURI) failed: %s", err)
+		s.logErrorf("httputil.DumpRequest failed: %s", err)
+		http.Error(w, "Bad request", http.StatusBadRequest)
 		return
 	}
-	req.URL = myurl
-	req.RequestURI = ""
 
-	buf := new(bytes.Buffer)
-	req.Write(buf)
-
-	s.log.Debugf("RAW HTTP REQUEST:\n%s", string(buf.Bytes()))
+	s.logDebugf("RAW HTTP REQUEST:\n%s", string(serialized))
 
 	thin := s.getThin()
-	rawReply, err := sendRequest(thin, buf.Bytes())
+	rawReply, err := sendRequest(thin, serialized)
 	if err != nil {
-		s.log.Warnf("Thin client error, reconnecting: %s", err)
+		s.logWarnf("Thin client error, reconnecting: %s", err)
 		thin = s.reconnect()
-		rawReply, err = sendRequest(thin, buf.Bytes())
+		rawReply, err = sendRequest(thin, serialized)
 	}
 	if err != nil {
-		s.log.Errorf("Failed to send message: %s", err)
+		s.logErrorf("Failed to send message: %s", err)
 		if strings.Contains(err.Error(), "exceeds maximum") {
 			http.Error(w, "custom 500", http.StatusInternalServerError)
 		} else {
@@ -215,32 +214,34 @@ func (s *Server) Handler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	resp, err := http.ReadResponse(bufio.NewReader(bytes.NewReader(rawReply)), nil)
+	// Decode CBOR response from the server
+	proxyResponse := &proxycommon.Response{}
+	_, err = cbor.UnmarshalFirst(rawReply, proxyResponse)
 	if err != nil {
-		s.log.Errorf("Failed to parse response: %s", err)
+		s.logErrorf("Failed to unmarshal CBOR response: %s", err)
+		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+		return
+	}
+
+	responseReader := bufio.NewReader(bytes.NewReader(proxyResponse.Payload))
+	resp, err := http.ReadResponse(responseReader, req)
+	if err != nil {
+		s.logErrorf("Failed to parse HTTP response: %s", err)
 		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
 		return
 	}
 	defer resp.Body.Close()
 
-	responsePayload, err := io.ReadAll(resp.Body)
-	if err != nil {
-		s.log.Errorf("Failed to read response body: %s", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
+	s.logInfof("Response: %d %s", resp.StatusCode, resp.Status)
 
-	s.log.Infof("Response: %s", responsePayload)
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Content-Length", fmt.Sprintf("%d", len(responsePayload)))
+	// Copy response headers
 	for k, v := range resp.Header {
 		for _, hv := range v {
 			w.Header().Add(k, hv)
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	fmt.Fprintf(w, string(responsePayload))
+	io.Copy(w, resp.Body)
 }
 
 func sendRequest(thin *thin.ThinClient, httpRequestBytes []byte) ([]byte, error) {
@@ -252,14 +253,14 @@ func sendRequest(thin *thin.ThinClient, httpRequestBytes []byte) ([]byte, error)
 	if doc == nil {
 		return nil, fmt.Errorf("PKI document is not available")
 	}
-	fmt.Printf("PKI doc epoch=%d, num service nodes=%d\n", doc.Epoch, len(doc.ServiceNodes))
+	log.Printf("PKI doc epoch=%d, num service nodes=%d\n", doc.Epoch, len(doc.ServiceNodes))
 
 	target, err := thin.GetService(ProxyHTTPService)
 	if err != nil {
 		return nil, fmt.Errorf("GetService(%s) failed: %w", ProxyHTTPService, err)
 	}
-	nodeId := sha256.Sum256(target.MixDescriptor.IdentityKey)
-	fmt.Printf("GetService(%s) ok: endpoint=%s, node=%x\n", ProxyHTTPService, target.RecipientQueueID, nodeId[:8])
+	nodeId := hash.Sum256(target.MixDescriptor.IdentityKey)
+	log.Printf("GetService(%s) ok: endpoint=%s, node=%x\n", ProxyHTTPService, target.RecipientQueueID, nodeId[:8])
 
 	timeoutCtx, cancel := context.WithTimeout(context.TODO(), time.Duration(timeout)*time.Second)
 	defer cancel()
@@ -271,11 +272,11 @@ func startKPSListener(s *Server, addr string, httpAddr string) {
 		KeyFile: "kps.key",
 	})
 	if err != nil {
-		s.log.Fatalf("KPS listen failed: %s", err)
+		s.logFatalf("KPS listen failed: %s", err)
 	}
 
 	kpsAddr := ln.Address("")
-	s.log.Infof("KPS address: %s", kpsAddr)
+	s.logInfof("KPS address: %s", kpsAddr)
 
 	// Register /boot endpoint on HTTP server
 	http.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {
@@ -302,12 +303,12 @@ func startKPSListener(s *Server, addr string, httpAddr string) {
 		w.Write(worker)
 	})
 
-	s.log.Infof("KPS listener started on %s", addr)
+	s.logInfof("KPS listener started on %s", addr)
 
 	for {
 		conn, err := ln.Accept(context.Background())
 		if err != nil {
-			s.log.Errorf("KPS accept: %s", err)
+			s.logErrorf("KPS accept: %s", err)
 			continue
 		}
 		go handleKPSConn(s, conn)
@@ -327,7 +328,7 @@ func handleKPSConn(s *Server, conn kps.Conn) {
 
 			reply, err := sendRequest(s.getThin(), body)
 			if err != nil {
-				s.log.Errorf("KPS sendRequest: %s", err)
+				s.logErrorf("KPS sendRequest: %s", err)
 				return
 			}
 
@@ -341,7 +342,7 @@ func (s *Server) SendTestProbes(testProbeSendDelay int, testProbeCount int, test
 	url := fmt.Sprintf("http://nowhere/_/probe/%d", testProbeResponseDelay)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		s.log.Errorf("http.NewRequest failed: %s", err)
+		s.logErrorf("http.NewRequest failed: %s", err)
 		return
 	}
 	buf := new(bytes.Buffer)
@@ -359,7 +360,7 @@ func (s *Server) SendTestProbes(testProbeSendDelay int, testProbeCount int, test
 		_, err = sendRequest(s.getThin(), httpRequestBytes)
 		elapsed := time.Since(t).Seconds()
 		if err != nil {
-			s.log.Errorf("Probe failed after %.2fs: %s", elapsed, err)
+			s.logErrorf("Probe failed after %.2fs: %s", elapsed, err)
 		} else {
 			packetsReceived++
 			rttTotal += elapsed
@@ -376,7 +377,7 @@ func (s *Server) SendTestProbes(testProbeSendDelay int, testProbeCount int, test
 		if packetsReceived == 0 {
 			rttMin = math.NaN()
 		}
-		s.log.Infof("Probe packet transmitted/received/loss = %d/%d/%.1f%% | rtt min/avg/max = %.2f/%.2f/%.2f s",
+		s.logInfof("Probe packet transmitted/received/loss = %d/%d/%.1f%% | rtt min/avg/max = %.2f/%.2f/%.2f s",
 			packetsTransmitted, packetsReceived, packetLoss, rttMin, rttAvg, rttMax)
 
 		if testProbeCount != 0 && packetsTransmitted >= testProbeCount {

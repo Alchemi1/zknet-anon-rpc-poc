@@ -6,6 +6,8 @@ zkn-anon-rpc-worker/node_modules/
 # Auto-generated
 walletshield/kps.key
 walletshield/kps.key.pub
+config/mixnet/client/kps.key
+config/mixnet/client/kps.key.pub
 config/mixnet/pkidata/
 config/mixnet/auth*/
 config/mixnet/mix*/
