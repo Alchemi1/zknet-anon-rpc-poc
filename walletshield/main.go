@@ -21,8 +21,8 @@ import (
 	"github.com/charmbracelet/log"
 	kps "github.com/privacy-ethereum/kps/libs/go"
 
-	"github.com/katzenpost/katzenpost/client2/config"
-	"github.com/katzenpost/katzenpost/client2/thin"
+	"github.com/katzenpost/katzenpost/client/config"
+	"github.com/katzenpost/katzenpost/client/thin"
 )
 
 var (

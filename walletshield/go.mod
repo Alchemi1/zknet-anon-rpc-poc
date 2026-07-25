@@ -57,4 +57,4 @@ require (
 	google.golang.org/protobuf v1.36.6 // indirect
 )
 
-replace github.com/katzenpost/katzenpost => /home/alchemical1/zknode-autonomi-v1/katzenpost
+replace github.com/katzenpost/katzenpost => /home/alchemical1/src/ZKNet/zknet-anon-rpc-poc/katzenpost

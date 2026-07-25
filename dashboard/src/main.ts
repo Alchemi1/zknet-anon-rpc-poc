@@ -1,5 +1,3 @@
-import { invoke } from "@tauri-apps/api/core";
-
 interface ContainerInfo {
   name: string;
   status: string;
@@ -12,6 +10,16 @@ interface EpochInfo {
   last_consensus: string;
 }
 
+interface AnonRpcStatus {
+  kps: { listening: boolean; boot: any; port: number };
+  worker: { worker_ready: boolean; worker_hash: string; worker_size?: number; contract_exists: boolean; source_lines: number };
+  http_proxy_port: number;
+  kps_port: number;
+  walletshield_port: number;
+  kps_addr: string;
+  worker_hash: string;
+}
+
 interface ProxyTestResult {
   success: boolean;
   response: string;
@@ -19,11 +27,23 @@ interface ProxyTestResult {
   error: string;
 }
 
+interface LogLine {
+  time: string;
+  text: string;
+}
+
+const API_BASE = "";
+
+async function api<T>(path: string, method = "GET"): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, { method });
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  return res.json();
+}
+
 function statusDotClass(status: string): string {
   if (status.includes("Up")) return "up";
   if (status.includes("Restarting")) return "restarting";
-  if (status === "down" || status === "error") return "down";
-  return status.includes("Up") ? "up" : "down";
+  return "down";
 }
 
 function renderContainers(containers: ContainerInfo[]) {
@@ -49,10 +69,10 @@ function renderEpoch(epoch: EpochInfo) {
 
   const dot = document.getElementById("statusDot")!;
   const text = document.getElementById("statusText")!;
-  if (epoch.consensus_status.includes("OK")) {
+  if (epoch.consensus_status.includes("OK") && !epoch.consensus_status.includes("no")) {
     dot.className = "status-dot online";
     text.textContent = "Network operational";
-  } else if (epoch.consensus_status.includes("partial")) {
+  } else if (epoch.consensus_status.includes("partial") || epoch.consensus_status.includes("(")) {
     dot.className = "status-dot partial";
     text.textContent = "Partial consensus";
   } else {
@@ -61,21 +81,46 @@ function renderEpoch(epoch: EpochInfo) {
   }
 }
 
+function renderAnonRpc(data: AnonRpcStatus) {
+  document.getElementById("wsHttp")!.textContent = data.kps.listening ? `online (:${data.kps.port})` : "offline";
+  document.getElementById("wsHttp")!.style.color = data.kps.listening ? "var(--green)" : "var(--red)";
+
+  document.getElementById("kpsStatus")!.textContent = data.kps.listening ? data.kps_addr : "not running";
+  document.getElementById("kpsStatus")!.style.color = data.kps.listening ? "var(--green)" : "var(--muted)";
+
+  const w = data.worker;
+  if (w.worker_ready) {
+    document.getElementById("workerStatus")!.innerHTML = `✅ built (${(w.worker_size! / 1024).toFixed(0)}KB, ${w.source_lines} src lines)`;
+    document.getElementById("workerHash")!.textContent = (data.worker_hash || w.worker_hash).slice(0, 42) + "...";
+  } else {
+    document.getElementById("workerStatus")!.textContent = "not built";
+    document.getElementById("workerStatus")!.style.color = "var(--yellow)";
+    document.getElementById("workerHash")!.textContent = "-";
+  }
+}
+
 async function refreshAll() {
   document.getElementById("lastUpdated")!.textContent = "refreshing...";
 
   try {
-    const containers = await invoke<ContainerInfo[]>("get_containers");
+    const containers = await api<ContainerInfo[]>("/api/containers");
     renderContainers(containers);
   } catch (e) {
     console.error("Failed to get containers:", e);
   }
 
   try {
-    const epoch = await invoke<EpochInfo>("get_epoch_status");
+    const epoch = await api<EpochInfo>("/api/epoch");
     renderEpoch(epoch);
   } catch (e) {
     console.error("Failed to get epoch status:", e);
+  }
+
+  try {
+    const anon = await api<AnonRpcStatus>("/api/anonrpc");
+    renderAnonRpc(anon);
+  } catch (e) {
+    console.error("Failed to get anon-rpc status:", e);
   }
 
   const now = new Date();
@@ -87,12 +132,20 @@ async function runProxyTest() {
   const resultDiv = document.getElementById("testResult")!;
   btn.disabled = true;
   resultDiv.className = "test-result pending";
-  resultDiv.textContent = "Sending request through mixnet (up to 120s)...";
+  resultDiv.textContent = "Sending request through mixnet (~5-120s)...";
 
   try {
-    const result = await invoke<ProxyTestResult>("test_http_proxy", {
-      url: "http://127.0.0.1:9205/",
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 130000);
+    const res = await fetch("/api/test", {
+      method: "POST",
+      signal: controller.signal,
     });
+    clearTimeout(timeoutId);
+
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+    const result: ProxyTestResult = await res.json();
 
     if (result.success) {
       let pretty: string;
@@ -111,7 +164,7 @@ async function runProxyTest() {
     }
   } catch (e) {
     resultDiv.className = "test-result failure";
-    resultDiv.textContent = `Dashboard error: ${e}`;
+    resultDiv.textContent = `Request failed: ${e}`;
   }
 
   btn.disabled = false;
@@ -122,16 +175,12 @@ async function loadLogs(container: string) {
   logArea.innerHTML = "loading...";
 
   try {
-    const lines = await invoke<string[]>("get_container_logs", {
-      container,
-      tail: 30,
-    });
+    const lines = await api<LogLine[]>(`/api/logs/${encodeURIComponent(container)}`);
     logArea.innerHTML = lines
       .map((l) => {
-        const timeMatch = l.match(/(\d{2}:\d{2}:\d{2})/);
-        const time = timeMatch ? timeMatch[1] : "";
-        const rest = time ? l.slice(timeMatch!.index! + 8) : l;
-        return `<div class="log-line"><span class="time">${time}</span>${escapeHtml(rest)}</div>`;
+        const time = l.time || "";
+        const rest = time ? (l.text.startsWith(time) ? l.text.slice(time.length) : l.text) : l.text;
+        return `<div class="log-line"><span class="time">${escapeHtml(time)}</span>${escapeHtml(rest)}</div>`;
       })
       .join("");
   } catch (e) {
@@ -153,14 +202,13 @@ document.addEventListener("DOMContentLoaded", () => {
   refreshAll();
   loadLogs(logSelector.value);
 
-  // Auto-refresh every 15s
   setInterval(refreshAll, 15000);
   setInterval(() => {
     const sel = document.getElementById("logSelector") as HTMLSelectElement;
     loadLogs(sel.value);
   }, 30000);
 
-  // Expose functions globally for onclick handlers
   (window as any).refreshAll = refreshAll;
   (window as any).runProxyTest = runProxyTest;
 });
+
