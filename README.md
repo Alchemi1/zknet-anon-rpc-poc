@@ -73,7 +73,7 @@ A standalone Python HTTP server that monitors the full mixnet stack.
 │  └───────┘ └───────────┘ └──────────┘                     │
 ├───────────────────────────────────────────────────────────┤
 │  PKI: Epoch 240546 ● Consensus OK                         │
-│  Anon-RPC: ws=online worker=built kps=0.0.0.0:9201:uEiA… │
+│  Anon-RPC: ws=online worker=built kps=0.0.0.0:9201:uEiA…  │
 │  HTTP Proxy Test: [Test Mixnet] → 0xad1673 (11342451)     │
 │  Logs: [mix-servicenode ▼] 10:15:59 ...                   │
 └───────────────────────────────────────────────────────────┘
