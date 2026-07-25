@@ -49,7 +49,17 @@ A reproducible standard config includes:
    - Matching SphinxGeometry
    - Correct voting authority list
 
-4. **Key persistence** (this repo's patch)
+4. **WalletShield config** (`walletshield/`)
+   - Thin client config at `config/mixnet/client/thinclient.toml`
+   - Worker bundle at `config/mixnet/client/worker.js` or `zkn-anon-rpc-worker/dist/worker.js`
+   - KPS keys auto-generated at `walletshield/kps.key` and `config/mixnet/client/kps.key`
+   - `ProxyHTTPService = "http_proxy"` matching servicenode CBORPluginKaetzchen endpoint
+
+5. **Dashboard config** (`dashboard/`)
+   - Python server on port 3517, static files in `dist/`
+   - Tauri desktop: Rust backend on default port, TypeScript frontend via Vite
+
+6. **Key persistence** (this repo's patch)
    - Mix keys saved to `<dataDir>/mixkey-<epoch>.key`
    - Loaded on restart — no epoch wait needed
    - Survives container restarts
@@ -59,7 +69,11 @@ A reproducible standard config includes:
 - [ ] All 9 containers running
 - [ ] PKI consensus achieved (3/3 signatures)
 - [ ] http-proxy-server Kaetzchen plugin active on servicenode
-- [ ] http-proxy-client connects to kpclientd
-- [ ] eth_blockNumber query returns valid response through mixnet
-- [ ] Mix keys persisted after restart (mixkey-*.key files exist)
+- [ ] http-proxy-client connects to kpclientd, listens on :9205
+- [ ] eth_blockNumber query returns valid response through mixnet (`curl :9205/` or `curl :9200/`)
+- [ ] walletshield-kps runs, `/boot` returns KPS address
+- [ ] walletshield-kps `/get-worker` serves worker bundle (200, ~1.2KB)
+- [ ] walletshield-kps `/` proxies CBOR-wrapped requests through mixnet
+- [ ] Python dashboard serves at `:3517` with all panels green
+- [ ] Mix keys persisted after restart (`mixkey-*.key` files exist in node data dirs)
 - [ ] Descriptor upload completes within window after restart
