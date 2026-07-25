@@ -4,6 +4,12 @@ interface ContainerInfo {
   ports: string;
 }
 
+interface ContainersResponse {
+  containers: ContainerInfo[];
+  active: number;
+  total: number;
+}
+
 interface EpochInfo {
   current_epoch: string;
   consensus_status: string;
@@ -46,9 +52,9 @@ function statusDotClass(status: string): string {
   return "down";
 }
 
-function renderContainers(containers: ContainerInfo[]) {
+function renderContainers(resp: ContainersResponse) {
   const grid = document.getElementById("containersGrid")!;
-  grid.innerHTML = containers
+  grid.innerHTML = resp.containers
     .map(
       (c) => `
     <div class="container-card">
@@ -60,6 +66,12 @@ function renderContainers(containers: ContainerInfo[]) {
     </div>`
     )
     .join("");
+
+  document.getElementById("activeCount")!.textContent = `${resp.active}`;
+  document.getElementById("totalCount")!.textContent = `${resp.total}`;
+  const pct = resp.total > 0 ? Math.round(resp.active / resp.total * 100) : 0;
+  document.getElementById("healthPct")!.textContent = `${pct}%`;
+  document.getElementById("healthPct")!.style.color = pct === 100 ? "var(--green)" : pct >= 66 ? "var(--yellow)" : "var(--red)";
 }
 
 function renderEpoch(epoch: EpochInfo) {
@@ -69,10 +81,10 @@ function renderEpoch(epoch: EpochInfo) {
 
   const dot = document.getElementById("statusDot")!;
   const text = document.getElementById("statusText")!;
-  if (epoch.consensus_status.includes("OK") && !epoch.consensus_status.includes("no")) {
-    dot.className = "status-dot online";
+  if (epoch.consensus_status.includes("consensus OK")) {
+    dot.className = "status-dot online pulse";
     text.textContent = "Network operational";
-  } else if (epoch.consensus_status.includes("partial") || epoch.consensus_status.includes("(")) {
+  } else if (epoch.consensus_status.includes("partial")) {
     dot.className = "status-dot partial";
     text.textContent = "Partial consensus";
   } else {
@@ -90,7 +102,7 @@ function renderAnonRpc(data: AnonRpcStatus) {
 
   const w = data.worker;
   if (w.worker_ready) {
-    document.getElementById("workerStatus")!.innerHTML = `✅ built (${(w.worker_size! / 1024).toFixed(0)}KB, ${w.source_lines} src lines)`;
+    document.getElementById("workerStatus")!.innerHTML = `\u2705 built (${(w.worker_size! / 1024).toFixed(0)}KB, ${w.source_lines} src lines)`;
     document.getElementById("workerHash")!.textContent = (data.worker_hash || w.worker_hash).slice(0, 42) + "...";
   } else {
     document.getElementById("workerStatus")!.textContent = "not built";
@@ -103,7 +115,7 @@ async function refreshAll() {
   document.getElementById("lastUpdated")!.textContent = "refreshing...";
 
   try {
-    const containers = await api<ContainerInfo[]>("/api/containers");
+    const containers = await api<ContainersResponse>("/api/containers");
     renderContainers(containers);
   } catch (e) {
     console.error("Failed to get containers:", e);
@@ -211,4 +223,3 @@ document.addEventListener("DOMContentLoaded", () => {
   (window as any).refreshAll = refreshAll;
   (window as any).runProxyTest = runProxyTest;
 });
-

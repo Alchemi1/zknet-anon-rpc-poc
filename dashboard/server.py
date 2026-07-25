@@ -14,7 +14,37 @@ PROJECT_DIR = os.path.dirname(BASE_DIR)
 DIST = os.path.join(BASE_DIR, "dist")
 CONFIG_DIR = os.path.join(PROJECT_DIR, "config", "mixnet")
 
-CONFIG_DIR = os.path.join(os.path.dirname(__file__), "..", "config", "mixnet")
+AUTH_NAMES = ["auth1", "auth2", "auth3"]
+CONTAINER_NAMES = ["mix-dirauth-1", "mix-dirauth-2", "mix-dirauth-3",
+                   "mix-1", "mix-2", "mix-3", "mix-gateway", "mix-servicenode", "mix-client"]
+
+
+def find_auth_containers():
+    """Dynamically discover running dirauth containers by name pattern."""
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=5
+        )
+        return [n.strip() for n in r.stdout.splitlines() if "dirauth" in n]
+    except Exception:
+        return ["mix-dirauth-1", "mix-dirauth-2", "mix-dirauth-3"]
+
+
+def find_container_strict(name):
+    """Find a container whose name ends with the given name."""
+    try:
+        r = subprocess.run(
+            ["docker", "ps", "--format", "{{.Names}}"],
+            capture_output=True, text=True, timeout=5
+        )
+        for n in r.stdout.splitlines():
+            if n.strip().endswith(name):
+                return n.strip()
+    except Exception:
+        pass
+    return name
+
 
 class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     def __init__(self, *args, **kwargs):
@@ -58,7 +88,6 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             return {"name": name, "status": "down", "ports": ""}
 
     def anon_rpc_worker_info(self):
-        """Check Anon-RPC worker bundle status."""
         worker_dir = os.path.join(PROJECT_DIR, "zkn-anon-rpc-worker")
         dist_path = os.path.join(worker_dir, "dist", "worker.js")
         src_path = os.path.join(worker_dir, "zkn-walletshield-worker.js")
@@ -78,13 +107,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         return info
 
     def kps_status(self):
-        """Check walletshield and KPS listener status."""
-        http_ok = False
         try:
             r = subprocess.run(["curl", "-s", "--max-time", "3", "http://127.0.0.1:9200/boot"],
                                capture_output=True, text=True, timeout=5)
             if r.returncode == 0 and r.stdout.strip():
-                http_ok = True
                 try:
                     boot = json.loads(r.stdout)
                     return {"listening": True, "boot": boot, "port": 9200}
@@ -108,61 +134,96 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             "worker_hash": kps_boot.get("worker", {}).get("hash", worker.get("worker_hash", "")),
         })
 
-    def api_containers(self):
-        names = ["mix-dirauth-1", "mix-dirauth-2", "mix-dirauth-3",
-                 "mix-1", "mix-2", "mix-3", "mix-gateway", "mix-servicenode", "mix-client"]
-        self.send_json([self.docker_ps(n) for n in names])
-
-    def tail_file(self, path, n=200):
+    def read_auth_log(self, container_name):
+        """Read auth log from its container. container_name is like mix-dirauth-1 or hash_mix-dirauth-3."""
+        m = re.search(r'dirauth[_-](\d+)', container_name)
+        auth_dir = f"auth{m.group(1)}" if m else container_name
         try:
-            r = subprocess.run(["tail", "-n", str(n), path], capture_output=True, text=True, timeout=5)
-            return r.stdout.splitlines()
+            r = subprocess.run(
+                ["docker", "exec", container_name, "tail", "-n", "500", f"/var/lib/katzenpost/{auth_dir}/katzenpost.log"],
+                capture_output=True, text=True, timeout=10
+            )
+            if r.returncode == 0:
+                return r.stdout.splitlines()
         except Exception:
-            return []
+            pass
+        return []
+
+    def api_containers(self):
+        containers = [self.docker_ps(n) for n in CONTAINER_NAMES]
+        # Discover any additional auth containers with hash prefixes
+        discovered = find_auth_containers()
+        seen = {c["name"] for c in containers}
+        for dc in discovered:
+            if dc not in seen:
+                containers.append(self.docker_ps(dc))
+                seen.add(dc)
+        active = sum(1 for c in containers if "Up" in c["status"])
+        total = len(containers)
+        self.send_json({"containers": containers, "active": active, "total": total})
 
     def api_epoch(self):
-        containers = ["auth1", "auth2", "auth3"]
         last_consensus = ""
-        consensus_ok = 0
         current_epoch = ""
-        base = os.path.join(CONFIG_DIR) if os.path.isdir(os.path.join(CONFIG_DIR, "auth1")) else "/var/lib/katzenpost"
+        consensus_times = []
+        auth_containers = find_auth_containers()
 
-        for c in containers:
-            log_path = os.path.join(base, c, "katzenpost.log")
+        for container in auth_containers:
+            # Derive auth dir name: mix-dirauth-3 → auth3
+            m = re.search(r'dirauth[_-](\d+)', container)
+            auth_name = f"auth{m.group(1)}" if m else container
+            lines = self.read_auth_log(container)
+            for line in lines:
+                if "SUCCESS! Achieved threshold consensus" in line and "Epoch:" in line:
+                    m = re.search(r"Epoch:\s*(\d+)", line)
+                    if m:
+                        consensus_times.append(m.group(1))
+
+        consensus_count = len(set(consensus_times))
+        last_consensus = consensus_times[-1] if consensus_times else ""
+
+        # Get current epoch from client logs
+        try:
+            r = subprocess.run(
+                ["docker", "exec", "mix-client", "sh", "-c",
+                 "tail -200 /var/lib/katzenpost/client/thinclient.log /var/lib/katzenpost/client/client.log 2>/dev/null"],
+                capture_output=True, text=True, timeout=10
+            )
+            for line in r.stdout.splitlines():
+                m = re.search(r"(?:epoch|Epoch)[:\s]*(\d+)", line)
+                if m:
+                    current_epoch = m.group(1)
+        except Exception:
+            pass
+
+        # Fallback: also try the walletshield's PKI doc output
+        if not current_epoch:
             try:
-                r = subprocess.run(["tail", "-n", "500", log_path], capture_output=True, text=True, timeout=5)
-                for line in r.stdout.splitlines():
-                    if "SUCCESS! Achieved threshold consensus" in line and "Epoch:" in line:
-                        m = re.search(r"Epoch:\s*(\d+)", line)
-                        if m:
-                            last_consensus = f"Epoch {m.group(1)}"
-                            consensus_ok += 1
+                r = subprocess.run(
+                    ["docker", "exec", "mix-client", "sh", "-c",
+                     "grep 'PKI doc epoch' /tmp/wl4.log /tmp/walletshield.log 2>/dev/null | tail -1"],
+                    capture_output=True, text=True, timeout=5
+                )
+                m = re.search(r"epoch=(\d+)", r.stdout)
+                if m:
+                    current_epoch = m.group(1)
             except Exception:
                 pass
 
-        # Try client log for current epoch
-        for log_path in [
-            os.path.join(base, "client", "thinclient.log"),
-            os.path.join(base, "client", "client.log"),
-            os.path.join(CONFIG_DIR, "..", "..", "data", "client.log") if CONFIG_DIR else "",
-        ]:
-            if not log_path or not os.path.exists(log_path):
-                continue
-            try:
-                r = subprocess.run(["tail", "-n", "100", log_path], capture_output=True, text=True, timeout=5)
-                for line in r.stdout.splitlines():
-                    if "Cached PKI document for epoch" in line:
-                        m = re.search(r"epoch\s*(\d+)", line)
-                        if m:
-                            current_epoch = m.group(1)
-            except Exception:
-                pass
+        # Also try querying the walletshield boot endpoint for the live epoch
+        try:
+            r = subprocess.run(
+                ["curl", "-s", "--max-time", "3", "http://127.0.0.1:9200/boot"],
+                capture_output=True, text=True, timeout=5
+            )
+        except Exception:
+            pass
 
+        status = "consensus OK" if consensus_count >= 3 else f"partial ({consensus_count}/3)" if consensus_count > 0 else "no consensus"
         self.send_json({
-            "current_epoch": "240546",
-            "consensus_status": f"consensus OK ({consensus_ok}/3)" if consensus_ok >= 3
-                else f"partial ({consensus_ok}/3)" if consensus_ok > 0 else "no consensus",
-            "last_consensus": last_consensus or "N/A",
+            "current_epoch": current_epoch or last_consensus or "N/A",
+            "consensus_status": status,
+            "last_consensus": f"Epoch {last_consensus}" if last_consensus else "N/A",
         })
 
     def api_logs(self, container):
