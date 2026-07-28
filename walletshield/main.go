@@ -165,14 +165,54 @@ func main() {
 		mylog.Printf("WARN: Event sink closed, connection to daemon may be lost")
 	}()
 
-	// Start KPS listener alongside HTTP
+	// Start KPS listener
+	var kpsAddr string
 	if kpsListenAddr != "" {
-		go startKPSListener(server, kpsListenAddr, listenAddr)
+		ln, err := kps.Listen(context.Background(), kpsListenAddr, kps.Options{KeyFile: "kps.key"})
+		if err != nil {
+			mylog.Printf("WARN: KPS listen failed on %s: %s", kpsListenAddr, err)
+		} else {
+			kpsAddr = ln.Address("")
+			mylog.Printf("INFO: KPS address: %s", kpsAddr)
+			mylog.Printf("INFO: KPS listener started on %s", kpsListenAddr)
+			go func() {
+				for {
+					conn, err := ln.Accept(context.Background())
+					if err != nil {
+						mylog.Printf("ERROR: KPS accept: %s", err)
+						continue
+					}
+					go handleKPSConn(server, conn)
+				}
+			}()
+		}
 	}
 
 	if testProbe {
 		server.SendTestProbes(testProbeSendDelay, testProbeCount, testProbeResponseDelay)
 	} else {
+		http.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"fetchInit": map[string]interface{}{
+					"address": contractAddr,
+					"preExisting": map[string]interface{}{
+						"resolve": fmt.Sprintf("http://%s/get-worker", listenAddr),
+					},
+				},
+				"kpsAddr": kpsAddr,
+			})
+		})
+		http.HandleFunc("/get-worker", func(w http.ResponseWriter, r *http.Request) {
+			worker, err := os.ReadFile("worker.js")
+			if err != nil {
+				http.Error(w, "worker bundle not found", http.StatusNotFound)
+				return
+			}
+			w.Header().Set("Content-Type", "application/javascript")
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(worker)))
+			w.Write(worker)
+		})
 		http.HandleFunc("/", server.Handler)
 		http.ListenAndServe(listenAddr, nil)
 	}
@@ -265,54 +305,6 @@ func sendRequest(thin *thin.ThinClient, httpRequestBytes []byte) ([]byte, error)
 	timeoutCtx, cancel := context.WithTimeout(context.TODO(), time.Duration(timeout)*time.Second)
 	defer cancel()
 	return thin.BlockingSendMessage(timeoutCtx, httpRequestBytes, &nodeId, target.RecipientQueueID)
-}
-
-func startKPSListener(s *Server, addr string, httpAddr string) {
-	ln, err := kps.Listen(context.Background(), addr, kps.Options{
-		KeyFile: "kps.key",
-	})
-	if err != nil {
-		s.logFatalf("KPS listen failed: %s", err)
-	}
-
-	kpsAddr := ln.Address("")
-	s.logInfof("KPS address: %s", kpsAddr)
-
-	// Register /boot endpoint on HTTP server
-	http.HandleFunc("/boot", func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"fetchInit": map[string]interface{}{
-				"address": contractAddr,
-				"preExisting": map[string]interface{}{
-					"resolve": fmt.Sprintf("http://%s/get-worker", httpAddr),
-				},
-			},
-			"kpsAddr": kpsAddr,
-		})
-	})
-
-	// Register /get-worker endpoint
-	http.HandleFunc("/get-worker", func(w http.ResponseWriter, r *http.Request) {
-		worker, err := os.ReadFile("worker.js")
-		if err != nil {
-			http.Error(w, "worker bundle not found", http.StatusNotFound)
-			return
-		}
-		w.Header().Set("Content-Type", "application/javascript")
-		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(worker)))
-		w.Write(worker)
-	})
-
-	s.logInfof("KPS listener started on %s", addr)
-
-	for {
-		conn, err := ln.Accept(context.Background())
-		if err != nil {
-			s.logErrorf("KPS accept: %s", err)
-			continue
-		}
-		go handleKPSConn(s, conn)
-	}
 }
 
 func handleKPSConn(s *Server, conn kps.Conn) {

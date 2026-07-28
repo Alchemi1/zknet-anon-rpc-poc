@@ -154,6 +154,9 @@ docker rm ws
 ## Quick Start
 
 ```bash
+# 0. Ensure port 9200 is free (stop host walletshield if running)
+systemctl --user stop walletshield.service 2>/dev/null || true
+
 # 1. Build the mixnet Docker image (~30 min)
 docker build -t zeros/mixnet-node:amd64 -f Dockerfile.mixnet .
 
@@ -197,6 +200,17 @@ curl -X POST http://127.0.0.1:9200/ \
 curl http://127.0.0.1:9200/boot
 ```
 
+Or use the all-in-one startup script:
+```bash
+./start.sh            # full startup with PKI wait
+./start.sh --no-wait  # skip PKI wait (services already running)
+```
+
+**Note:** A host-level walletshield from `com.zkn-client.app` may occupy port 9200.
+The startup script (`start.sh`) stops it automatically. If running manually,
+run `systemctl --user stop walletshield.service` first, or disable it permanently with
+`mv ~/.config/systemd/user/walletshield.service{,.disabled}`.
+
 Expected response:
 ```json
 {"jsonrpc":"2.0","result":"0xad251a","id":1}
@@ -208,6 +222,7 @@ Full round-trip takes ~5-60s (mixnet Poisson scheduling + Sphinx delays).
 
 ```
 zknet-anon-rpc-poc/
+├── start.sh                        # All-in-one startup script (stops host walletshield, starts mixnet + services + dashboard)
 ├── Dockerfile.mixnet              # Katzenpost build: 8 binaries from source
 ├── Dockerfile.walletshield.local  # WalletShield Go binary build
 ├── docker-compose.yml             # 9-service mixnet stack (host networking)
@@ -225,7 +240,8 @@ zknet-anon-rpc-poc/
 │   ├── main.go                    # WalletShield: HTTP + KPS listener + mixnet proxy
 │   ├── go.mod / go.sum            # Go module deps (KPS v0.2.1, CBOR, local katzenpost)
 │   ├── walletshield-kps           # Built binary (output of Dockerfile.walletshield.local)
-│   └── walletshield.py            # Lightweight Python wrapper (fallback)
+│   ├── walletshield.py            # Lightweight Python wrapper (fallback)
+│   └── worker.js                  # Anon-RPC worker bundle placeholder
 ├── dashboard/
 │   ├── server.py                  # Python web dashboard server
 │   ├── src/                       # TypeScript frontend (Vite build)
