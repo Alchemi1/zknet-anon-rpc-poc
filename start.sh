@@ -88,6 +88,17 @@ else
   echo "walletshield-kps started on :9200 (KPS :9201)"
 fi
 
+if process_running kps-monitor; then
+  echo "kps-monitor already running"
+else
+  docker exec -d mix-client \
+    /usr/local/bin/kps-monitor \
+    -boot http://127.0.0.1:9200 \
+    -http :9206 \
+    -interval 30s
+  echo "kps-monitor started on :9206"
+fi
+
 echo "=== 6/6 Starting dashboard..."
 # Kill any existing dashboard on port 3517
 fuser -k 3517/tcp 2>/dev/null || true

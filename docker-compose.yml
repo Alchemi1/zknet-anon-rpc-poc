@@ -7,6 +7,9 @@ services:
       - ./config/mixnet:/var/lib/katzenpost
     network_mode: host
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, NET_ADMIN, NET_RAW]
 
   mix-dirauth-2:
     image: zeros/mixnet-node:amd64
@@ -16,6 +19,9 @@ services:
       - ./config/mixnet:/var/lib/katzenpost
     network_mode: host
     restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, NET_ADMIN, NET_RAW]
     depends_on: [mix-dirauth-1]
 
   mix-dirauth-3:
@@ -25,6 +31,9 @@ services:
     volumes:
       - ./config/mixnet:/var/lib/katzenpost
     network_mode: host
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, NET_ADMIN, NET_RAW]
     restart: unless-stopped
     depends_on: [mix-dirauth-2]
 
@@ -35,6 +44,9 @@ services:
     volumes:
       - ./config/mixnet:/var/lib/katzenpost
     network_mode: host
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, NET_ADMIN, NET_RAW]
     restart: unless-stopped
     depends_on: [mix-dirauth-1, mix-dirauth-2, mix-dirauth-3]
 
@@ -45,6 +57,9 @@ services:
     volumes:
       - ./config/mixnet:/var/lib/katzenpost
     network_mode: host
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, NET_ADMIN, NET_RAW]
     restart: unless-stopped
     depends_on: [mix-dirauth-1, mix-dirauth-2, mix-dirauth-3]
 
@@ -55,6 +70,9 @@ services:
     volumes:
       - ./config/mixnet:/var/lib/katzenpost
     network_mode: host
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, NET_ADMIN, NET_RAW]
     restart: unless-stopped
     depends_on: [mix-dirauth-1, mix-dirauth-2, mix-dirauth-3]
 
@@ -65,6 +83,9 @@ services:
     volumes:
       - ./config/mixnet:/var/lib/katzenpost
     network_mode: host
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, NET_ADMIN, NET_RAW]
     restart: unless-stopped
     depends_on: [mix-1, mix-2, mix-3]
 
@@ -76,6 +97,9 @@ services:
       - ./config/mixnet:/var/lib/katzenpost
       - ./config/mixnet/servicenode-entrypoint.sh:/servicenode-entrypoint.sh:ro
     network_mode: host
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, NET_ADMIN, NET_RAW]
     restart: unless-stopped
     depends_on: [mix-1, mix-2, mix-3]
 
@@ -96,5 +120,8 @@ services:
     volumes:
       - ./config/mixnet:/var/lib/katzenpost
     network_mode: host
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE, NET_ADMIN, NET_RAW]
     restart: unless-stopped
     depends_on: [mix-gateway]

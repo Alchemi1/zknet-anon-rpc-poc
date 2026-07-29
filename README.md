@@ -1,11 +1,12 @@
 # ZKNetwork + Anon-RPC Proof of Concept
 
-Anon-RPC wallets route Ethereum JSON-RPC through the ZKNetwork Katzenpost mixnet. This repo builds the entire Katzenpost mixnet from source, runs it in Docker, and provides **two access paths** for Ethereum RPC:
+Anon-RPC wallets route Ethereum JSON-RPC through the ZKNetwork Katzenpost mixnet. This repo builds the entire Katzenpost mixnet from source, runs it in Docker, and provides **three access paths** for Ethereum RPC:
 
 - **HTTP proxy** — `http-proxy-client` on `:9205` accepts plain HTTP, forwards through mixnet
-- **WalletShield + KPS** — Go binary on `:9200` adds KPS WebRTC listener on `:9201`, `/boot` + `/get-worker` endpoints for Anon-RPC client discovery
+- **WalletShield + KPS** — Go binary on `:9200` adds KPS listener on `:9201`, `/boot` + `/get-worker` endpoints
+- **KPS client CLI** — Go CLI (`kps-client/`) dials the KPS listener over QUIC and sends RPC through the mixnet
 
-A **Python web dashboard** (`:3517`) provides real-time monitoring, and a **Tauri v2 desktop dashboard** is also available for local GUI use.
+A **Python web dashboard** (`:3517`) provides real-time monitoring including **KPS transport stats** and a **live balance watcher**.
 
 ## Architecture
 
@@ -26,19 +27,21 @@ curl → http-proxy-client:9205
               └── SURB decrypt ← gateway ← mix3 ← mix2 ← mix1 ← servicenode
 
 ── WalletShield / KPS path ──
-KPS client → walletshield-kps:9201 (WebRTC KPS)
-                 │
-                 ├── /boot         → KPS address + worker info
-                 ├── /get-worker   → Anon-RPC worker bundle
-                 ├── /             → HTTP proxy through mixnet (CBOR-wrapped)
-                 │
-                 └── thin client protocol (TCP 64332)
-                     │
-                     kpclientd → gateway → mix1 → mix2 → mix3 → servicenode
+KPS client → walletshield-kps:9201 (QUIC KPS)
+                  │
+                  ├── /boot         → KPS address
+                  ├── /get-worker   → Anon-RPC worker bundle
+                  ├── /             → HTTP proxy through mixnet (CBOR-wrapped)
+                  │
+                  └── thin client protocol → kpclientd → mixnet → servicenode
 
-── Dashboards ──
-Browser → Python web dashboard:3517
-Browser → Tauri desktop dashboard (standalone binary)
+── Monitoring path ──
+Browser → Python dashboard:3517
+              │
+              ├── /api/kps-stats → kps-monitor:9206/stats
+              │                       └── persistent KPS connection → walletshield → mixnet → RPC
+              ├── /api/kps-rpc   → kps-monitor:9206/rpc  (on-demand RPC via KPS)
+              └── /api/test      → http-proxy-client:9205 (direct HTTP proxy test)
 ```
 
 ### Docker Mixnet Stack
@@ -49,107 +52,9 @@ Browser → Tauri desktop dashboard (standalone binary)
 | `mix-1/2/3` | Sphinx mix nodes (packet mixing & forwarding) | 30011,30014,30017 |
 | `mix-gateway` | Gateway node (client entry point) | 30004 |
 | `mix-servicenode` | Service node with http_proxy Kaetzchen plugin | 30010 |
-| `mix-client` | kpclientd daemon + walletshield + http-proxy-client | 64332,9200,9201,9205 |
+| `mix-client` | kpclientd daemon + walletshield + http-proxy-client + kps-monitor | 64332,9200,9201,9205,9206 |
 
-All containers use `network_mode: host` — services are available on `127.0.0.1` directly.
-
-## Dashboards
-
-### Python Web Dashboard (`:3517`)
-
-A standalone Python HTTP server that monitors the full mixnet stack.
-
-```
-┌───────────────────────────────────────────────────────────┐
-│  ZKNetwork Mixnet Dashboard                    ● online   │
-├───────────────────────────────────────────────────────────┤
-│  ┌───────┐ ┌───────┐ ┌───────┐ ┌──────┐ ┌──────┐ ┌──────┐ │
-│  │dirauth│ │dirauth│ │dirauth│ │ mix1 │ │ mix2 │ │ mix3 │ │
-│  │ ● Up  │ │ ● Up  │ │ ● Up  │ │ ● Up │ │ ● Up │ │ ● Up │ │
-│  └───────┘ └───────┘ └───────┘ └──────┘ └──────┘ └──────┘ │
-│  ┌───────┐ ┌───────────┐ ┌──────────┐                     │
-│  │gateway│ │servicenode│ │  client  │                     │
-│  │ ● Up  │ │    ● Up   │ │  ● Up    │                     │
-│  └───────┘ └───────────┘ └──────────┘                     │
-├───────────────────────────────────────────────────────────┤
-│  PKI: Epoch 240546 ● Consensus OK                         │
-│  Anon-RPC: ws=online worker=built kps=0.0.0.0:9201:uEiA…  │
-│  HTTP Proxy Test: [Test Mixnet] → 0xad1673 (11342451)     │
-│  Logs: [mix-servicenode ▼] 10:15:59 ...                   │
-└───────────────────────────────────────────────────────────┘
-```
-
-**Run:**
-```bash
-cd dashboard
-python3 server.py
-# → http://127.0.0.1:3517
-```
-
-APIs:
-- `GET /` — HTML page with live-updating panels
-- `GET /api/containers` — Docker container status (9 containers)
-- `GET /api/pki` — PKI epoch, consensus, service node count
-- `GET /api/anonrpc` — WalletShield status, KPS address, worker bundle hash
-- `GET /api/probe` — Test mixnet round-trip with `eth_blockNumber`
-- `GET /api/logs?container=<name>&lines=100` — Container logs
-
-### Tauri Desktop Dashboard
-
-A cross-platform desktop app built with Tauri v2 + Rust + TypeScript.
-
-```bash
-cd dashboard
-npm install
-npm run tauri build
-./src-tauri/target/debug/zknet-dashboard
-```
-
-## WalletShield (`walletshield-kps`)
-
-The Go binary that provides KPS transport and HTTP proxy through the mixnet.
-
-**Endpoints:**
-| Endpoint | Port | Description |
-|----------|------|-------------|
-| `HTTP API` | `:9200` | `/boot`, `/get-worker`, `/` (HTTP proxy via mixnet) |
-| `KPS Listener` | `:9201` | WebRTC KPS transport for Anon-RPC clients |
-
-**Run:**
-```bash
-# Start inside mix-client container
-docker exec -d mix-client \
-  /usr/local/bin/walletshield-kps \
-  -config /var/lib/katzenpost/client/thinclient.toml \
-  -listen 127.0.0.1:9200 \
-  -kps_listen 0.0.0.0:9201 \
-  -log_level INFO
-
-# Test /boot (KPS address + worker info)
-curl http://127.0.0.1:9200/boot
-
-# Test /get-worker (worker bundle)
-curl -o worker.js http://127.0.0.1:9200/get-worker
-
-# Test HTTP proxy through mixnet
-curl -X POST http://127.0.0.1:9200/ \
-  -H "Content-Type: application/json" \
-  -H "Host: ethereum-sepolia.publicnode.com" \
-  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
-```
-
-**Build from source:**
-```bash
-docker build -t walletshield -f Dockerfile.walletshield.local .
-docker create --name ws walletshield
-docker cp ws:/usr/local/bin/walletshield walletshield/walletshield-kps
-docker rm ws
-```
-
-## Prerequisites
-
-- Docker + Docker Compose (v2+)
-- ~4GB free disk, ~30min for initial mixnet build
+All containers use `network_mode: host`. Docker security: `no-new-privileges`, `cap_drop: [ALL]`, selective `cap_add`.
 
 ## Quick Start
 
@@ -160,167 +65,234 @@ systemctl --user stop walletshield.service 2>/dev/null || true
 # 1. Build the mixnet Docker image (~30 min)
 docker build -t zeros/mixnet-node:amd64 -f Dockerfile.mixnet .
 
-# 2. Start the full mixnet (9 containers)
+# 2. Build the walletshield binary
+docker build -t walletshield -f Dockerfile.walletshield.local .
+docker create --name ws walletshield && docker cp ws:/usr/local/bin/walletshield walletshield/walletshield-kps && docker rm ws
+
+# 3. Build kps-client and kps-monitor
+docker run --rm -v $(pwd)/kps-client:/src -w /src golang:latest go build -o kps-client .
+docker run --rm -v $(pwd)/kps-monitor:/src -w /src golang:latest go build -o kps-monitor .
+
+# 4. Start the full stack
+./start.sh
+# → Dashboard at http://127.0.0.1:3517
+```
+
+Or run individual steps:
+
+```bash
+# Start containers
 docker compose up -d
 
-# 3. Wait for PKI consensus (~90s)
+# Wait for PKI consensus (~90s)
 docker logs mix-client -f
 # Look for: "PKI doc available"
 
-# 4. Start HTTP proxy client and walletshield
-docker exec -d mix-client \
-  /usr/local/bin/http-proxy-client \
-  -cfg /var/lib/katzenpost/client/thinclient.toml \
-  -port 9205 -ep http_proxy -log_level DEBUG
+# Start services inside mix-client
+docker exec -d mix-client /usr/local/bin/http-proxy-client -cfg /var/lib/katzenpost/client/thinclient.toml -port 9205 -ep http_proxy -log_level DEBUG
+docker exec -d mix-client /usr/local/bin/walletshield-kps -config /var/lib/katzenpost/client/thinclient.toml -listen 127.0.0.1:9200 -kps_listen 0.0.0.0:9201 -log_level INFO
+docker exec -d mix-client /usr/local/bin/kps-monitor -boot http://127.0.0.1:9200 -http :9206 -interval 30s
 
-docker exec -d mix-client \
-  /usr/local/bin/walletshield-kps \
-  -config /var/lib/katzenpost/client/thinclient.toml \
-  -listen 127.0.0.1:9200 \
-  -kps_listen 0.0.0.0:9201 \
-  -log_level INFO
-
-# 5. Start the web dashboard
+# Start dashboard
 cd dashboard && python3 server.py &
-# → http://127.0.0.1:3517
-
-# 6. Test via HTTP proxy (direct)
-curl -X POST http://127.0.0.1:9205/ \
-  -H "Content-Type: application/json" \
-  -H "Host: ethereum-sepolia.publicnode.com" \
-  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
-
-# 7. Test via walletshield
-curl -X POST http://127.0.0.1:9200/ \
-  -H "Content-Type: application/json" \
-  -H "Host: ethereum-sepolia.publicnode.com" \
-  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
-
-# 8. Test walletshield boot
-curl http://127.0.0.1:9200/boot
 ```
 
-Or use the all-in-one startup script:
+## Dashboard
+
+The web dashboard at `http://127.0.0.1:3517` provides:
+
+| Card | Data | Refresh |
+|------|------|---------|
+| **Node Grid** | 9 container statuses (Up/Down/Restarting) | 15s |
+| **PKI Consensus** | Current epoch, consensus status, last consensus time | 15s |
+| **Anon-RPC / KPS** | Walletshield status, KPS address, worker bundle info | 15s |
+| **KPS Transport** | Connection status, KPS address, last/min/avg/max RTT, success rate, probe counts, uptime, RTT history bar chart | 15s |
+| **KPS RPC** | Send arbitrary `eth_*` methods via KPS with result display | on-demand |
+| **Balance Watcher** | Live ETH balance for any address, polled every 10s via KPS, balance history chart | 10s polling |
+| **HTTP Proxy Test** | Send `eth_blockNumber` through mixnet, shows RTT + result | on-demand |
+| **Container Logs** | Tail 30 lines for any container | 30s |
+
+APIs:
+- `GET /api/containers` — Docker container status
+- `GET /api/epoch` — PKI epoch, consensus status
+- `GET /api/anonrpc` — WalletShield, KPS, worker info
+- `GET /api/kps-stats` — KPS monitor stats (proxied from `:9206/stats`)
+- `POST /api/kps-rpc` — Send arbitrary JSON-RPC via KPS (proxied from `:9206/rpc`)
+- `POST /api/test` — Test mixnet HTTP proxy round-trip
+- `GET /api/logs/{container}` — Container logs
+
+## KPS Client CLI
+
+A Go CLI that demonstrates the full KPS transport path:
+
 ```bash
-./start.sh            # full startup with PKI wait
-./start.sh --no-wait  # skip PKI wait (services already running)
+# Get KPS address
+curl -s http://127.0.0.1:9200/boot
+
+# Run KPS client
+./kps-client/kps-client -boot http://127.0.0.1:9200 -method eth_blockNumber
+
+# Custom RPC
+./kps-client/kps-client -boot http://127.0.0.1:9200 -method eth_getBalance -rpc-host ethereum-sepolia.publicnode.com
 ```
 
-**Note:** A host-level walletshield from `com.zkn-client.app` may occupy port 9200.
-The startup script (`start.sh`) stops it automatically. If running manually,
-run `systemctl --user stop walletshield.service` first, or disable it permanently with
-`mv ~/.config/systemd/user/walletshield.service{,.disabled}`.
+Flow: `kps-client → kps.Dial (QUIC) → walletshield KPS :9201 → thin client → kpclientd → mixnet → servicenode → http-proxy-server → Ethereum Sepolia RPC`
 
-Expected response:
-```json
-{"jsonrpc":"2.0","result":"0xad251a","id":1}
+## KPS Monitor
+
+A persistent monitoring service that maintains a KPS connection and exposes HTTP endpoints:
+
+```bash
+# Start
+docker exec -d mix-client /usr/local/bin/kps-monitor -boot http://127.0.0.1:9200 -http :9206 -interval 30s
+
+# Get stats
+curl http://127.0.0.1:9206/stats
+
+# Send on-demand RPC via KPS
+curl -X POST http://127.0.0.1:9206/rpc \
+  -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}'
+
+# Watch a balance
+curl -X POST http://127.0.0.1:9206/rpc \
+  -d '{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045","latest"],"id":1}'
 ```
 
-Full round-trip takes ~5-60s (mixnet Poisson scheduling + Sphinx delays).
+## Demo Script
+
+```bash
+./demo.sh
+```
+
+Tests all 8 transport paths with per-step timeouts:
+1. Walletshield boot endpoint
+2. HTTP proxy via walletshield (`:9200`)
+3. Direct HTTP proxy (`:9205`)
+4. KPS client CLI
+5. KPS monitor stats
+6. KPS RPC on-demand
+7. Dashboard container status
+8. Dashboard KPS stats
+
+## Security Audit
+
+A ZKN security audit MCP server is available:
+
+```bash
+cd /path/to/zkn-security-server
+npm install
+
+# Full audit
+./zkn-audit scan /path/to/zknet-anon-rpc-poc
+
+# Category-specific
+./zkn-audit scan /path/to/zknet-anon-rpc-poc --category mixnet --min-severity high
+
+# Rules info
+./zkn-audit list-rules
+./zkn-audit rule ZKN-MX-001
+
+# Serve as MCP server
+./zkn-audit serve
+```
+
+60 rules across 7 categories (smart contracts, ZK crypto, circuits, mixnet, infra, dApp, supply chain). Evidence-gated (confirmed/likely/plausible/unconfirmed). Auto-fix patching for Solidity.
 
 ## Project Structure
 
 ```
 zknet-anon-rpc-poc/
-├── start.sh                        # All-in-one startup script (stops host walletshield, starts mixnet + services + dashboard)
-├── Dockerfile.mixnet              # Katzenpost build: 8 binaries from source
-├── Dockerfile.walletshield.local  # WalletShield Go binary build
-├── docker-compose.yml             # 9-service mixnet stack (host networking)
-├── katzenpost/                    # Katzenpost upstream source (v0.0.97, submodule)
+├── start.sh                        # All-in-one startup
+├── demo.sh                         # Full-stack demo script
+├── Dockerfile.mixnet              # Katzenpost build
+├── Dockerfile.mixnet-proxy        # Mixnet proxy build (arm64)
+├── Dockerfile.walletshield        # WalletShield build (arm64)
+├── Dockerfile.walletshield.local  # WalletShield local build (amd64)
+├── docker-compose.yml             # 9-service mixnet stack
+├── MIXNET_TUNING.md               # Mixnet parameter tuning guide
+├── katzenpost/                    # Katzenpost upstream source (submodule)
 │   └── cmd/
 │       ├── server/                # Mix/gateway/service node binary
 │       ├── dirauth/               # Directory authority binary
 │       ├── courier/               # Courier Kaetzchen plugin
-│       ├── echo-plugin/           # Echo Kaetzchen plugin
-│       ├── http-proxy-server/     # HTTP proxy Kaetzchen plugin (servicenode side)
-│       ├── http-proxy-client/     # HTTP proxy client (local side)
-│       ├── kpclientd/             # Client daemon with thin client protocol
+│       ├── http-proxy-server/     # HTTP proxy Kaetzchen plugin
+│       ├── http-proxy-client/     # HTTP proxy client
+│       ├── kpclientd/             # Client daemon
 │       └── fetch/                 # Network topology fetcher
 ├── walletshield/
-│   ├── main.go                    # WalletShield: HTTP + KPS listener + mixnet proxy
-│   ├── go.mod / go.sum            # Go module deps (KPS v0.2.1, CBOR, local katzenpost)
-│   ├── walletshield-kps           # Built binary (output of Dockerfile.walletshield.local)
-│   ├── walletshield.py            # Lightweight Python wrapper (fallback)
+│   ├── main.go                    # WalletShield: HTTP + KPS + mixnet proxy
+│   ├── go.mod / go.sum
+│   ├── walletshield-kps           # Built binary
+│   ├── walletshield.py            # Python wrapper (fallback)
 │   └── worker.js                  # Anon-RPC worker bundle placeholder
+├── kps-client/                    # KPS demo client (Go)
+│   ├── main.go                    # CLI: dial KPS, send RPC, display result
+│   ├── go.mod / go.sum
+│   └── kps-client                 # Built binary
+├── kps-monitor/                   # KPS monitoring service (Go)
+│   ├── main.go                    # Persistent KPS connection + /stats + /rpc
+│   ├── go.mod / go.sum
+│   └── kps-monitor                # Built binary
 ├── dashboard/
-│   ├── server.py                  # Python web dashboard server
-│   ├── src/                       # TypeScript frontend (Vite build)
-│   ├── dist/                      # Built frontend assets
-│   └── src-tauri/                 # Tauri v2 Rust backend for desktop app
+│   ├── server.py                  # Python web dashboard
+│   ├── index.html                 # Frontend HTML
+│   ├── src/main.ts                # TypeScript frontend
+│   └── dist/                      # Built frontend assets
 ├── zkn-anon-rpc-worker/
 │   ├── zkn-walletshield-worker.js # Anon-RPC worker source
+│   ├── ZKNWalletShield.sol        # Specifier contract
 │   └── dist/worker.js             # Built worker bundle
 ├── config/mixnet/
-│   ├── auth1-3/authority.toml     # Authority configs (PKI voting)
+│   ├── auth1-3/authority.toml     # Authority configs
 │   ├── mix1-3/katzenpost.toml     # Mix node configs
 │   ├── gateway1/katzenpost.toml   # Gateway config
 │   ├── servicenode1/
-│   │   ├── katzenpost.toml        # Service node config (http_proxy + courier + chat)
-│   │   └── http_proxy_config.toml # Upstream network mappings
-│   ├── client/
-│   │   ├── client.toml            # kpclientd config (pinned gateway)
-│   │   ├── thinclient.toml        # Thin client dial config
-│   │   └── worker.js              # Anon-RPC worker bundle (copy)
-│   └── courier/courier.toml       # Courier plugin config
+│   │   ├── katzenpost.toml        # Service node config
+│   │   └── http_proxy_config.toml # Upstream RPC mappings
+│   ├── client/client.toml         # kpclientd config
+│   └── client/thinclient.toml     # Thin client dial config
 ├── patches/
 │   └── fix-decoy-sender-nil-pointer.patch
-├── MIXNET_TUNING.md               # Tuning guide for mixnet parameters
-├── test-via-curl.sh               # Quick test script for walletshield
-├── test-via-mixnet.js             # KPS path test (Node.js)
-└── test-boot.sh                   # Boot endpoint test
+└── test-*.sh / test-*.js          # Test scripts
 ```
 
-## Mix Key Persistence
+## Mixnet Tuning
 
-By default, Katzenpost regenerates mix keys on every restart. This causes Sphinx packet decryption failures (MAC mismatch) for one full epoch. This repo patches the source to **persist mix keys to disk**.
+See `MIXNET_TUNING.md` for current parameters. Key levers:
 
-Key files stored at `<dataDir>/mixkey-<epoch>.key`:
-- Format: 1-byte type (0=NIKE, 1=KEM) + public key bytes + private key bytes
-- Generated on first startup, loaded from disk on subsequent starts
-- Survives container restarts — no epoch wait required
+| Parameter | Default | Tuned | Effect |
+|-----------|---------|-------|--------|
+| `LambdaP` (Poisson rate) | 0.001 | **0.008** | ~125ms mean scheduling delay (was ~1000ms) |
+| `UnwrapDelay` (per hop) | 250ms | **50ms** | Sphinx unwrap |
+| `GatewayDelay` | 500ms | **100ms** | Gateway processing |
+| `ServiceDelay` | 500ms | **100ms** | Service node processing |
+| `KaetzchenDelay` | 750ms | **200ms** | Plugin processing |
+| `DecoySlack` | 15000ms | **5000ms** | Decoy timing |
 
-## Patches Applied
+## Security
 
-| Patch | File | Description |
-|-------|------|-------------|
-| `fix-decoy-sender-nil-pointer.patch` | `client/sender.go` | Nil-check `rates` before dereferencing |
-| nil rate check | `client/sender.go` | `if rates == nil || rates.messageOrLoop <= 0` |
-| socket panic→log | `server/cborplugin/socket.go:91` | `panic(err)` → `c.log.Fatalf(...)` |
-| mix key persistence | `server/internal/mixkey/mixkey.go` | `Init()` function to load keys from disk |
-| mix key persistence | `server/internal/mixkeys/mixkeys.go` | `saveKeyToDisk()` / `loadKeyFromDisk()` methods |
-| HTTP proxy URL fix | `cmd/http-proxy-server/main.go` | Handle path-only URLs, construct full URL from Host header |
-| HTTP proxy client fix | `cmd/http-proxy-client/main.go` | Set URL scheme to "https" before dumping request |
-
-## KPS Transport Test
-
-```bash
-# Install KPS QUIC client
-npm install @kpstreams/quic-client
-
-# Get KPS address from walletshield
-KPS_ADDR=$(curl -s http://127.0.0.1:9200/boot | python3 -c "import json,sys;print(json.load(sys.stdin)['kpsAddr'])")
-
-# Test KPS path
-node test-via-mixnet.js $KPS_ADDR
-```
+Docker hardening applied:
+- Non-root `app` user in all runtime images
+- `security_opt: no-new-privileges:true`
+- `cap_drop: [ALL]` with selective `cap_add: [NET_BIND_SERVICE, NET_ADMIN, NET_RAW]`
+- Solidity pragma locked to `0.8.28`
+- Mixnet config files are local-only (not deployed to production)
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---------|-------|-----|
-| `kpclientd: connection refused` | Mixnet not ready | Wait 60s for PKI consensus |
-| `Sphinx MAC mismatch` | Node restarted, mix keys regenerated | Wait for next epoch (~20 min) or use persisted keys |
-| `unsupported protocol scheme ""` | http-proxy-server got path-only URL | Set `Host` header in curl |
-| `context deadline exceeded` | Mixnet round-trip > timeout | Retry; mixnet delays can be long (up to 60s) |
+| `connection refused` on :9200 | walletshield not running in container | `docker exec -d mix-client /usr/local/bin/walletshield-kps ...` |
+| `Read: timeout` | Mixnet slow or no consensus | Wait for epoch transition (~20 min after restart) |
+| `OpenStream: timeout` | KPS connection lost | kps-monitor auto-reconnects on failure |
+| `http-proxy-client` dead | Started via `&` not `docker exec -d` | Use `start.sh` or `docker exec -d` |
 | `PKI doc not available` | Dirauths not in consensus | Check `docker logs mix-dirauth-1` for voting errors |
-| `ERROR: Layers 5 exceeds maximum` | Too many topology layers | Keep `[Debug] Layers ≤ 3` |
-| `Document contains multiple entries` | Duplicate nodes in topology | Don't reuse mix node identifiers across layers |
-| `GetService(proxy) failed` | Wrong service name in walletshield | Use `http_proxy` (the registered CBORPluginKaetzchen endpoint) |
+| Port 9200 in use | Host walletshield from `com.zkn-client.app` | `systemctl --user stop walletshield.service` |
 
 ## References
 
-- Anon-RPC SPEC: https://github.com/privacy-ethereum/anon-rpc/blob/main/SPEC.md
+- Anon-RPC: https://github.com/privacy-ethereum/anon-rpc
 - Anon-RPC demo: https://privacy-ethereum.github.io/anon-rpc/demo/
 - Katzenpost: https://github.com/katzenpost/katzenpost
 - KPS library: https://github.com/privacy-ethereum/kps
-- KPS Go client: https://github.com/privacy-ethereum/kps/libs/go
+- ZKN Security Audit: (local) `mcp-servers/zkn-security-server`

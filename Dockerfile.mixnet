@@ -42,9 +42,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsnappy1v5 \
     liblz4-1 \
     libzstd1 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system --gid 1001 app \
+    && adduser --system --uid 1001 --ingroup app --no-create-home app
 
 COPY --from=builder /usr/local/lib/librocksdb.so* /usr/local/lib/
 COPY --from=builder /dest/* /usr/local/bin/
 
 RUN ldconfig
+
+USER app

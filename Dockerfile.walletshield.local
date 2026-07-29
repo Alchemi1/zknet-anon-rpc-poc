@@ -19,9 +19,13 @@ FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system --gid 1001 app \
+    && adduser --system --uid 1001 --ingroup app --no-create-home app
 
 COPY --from=builder /walletshield /usr/local/bin/walletshield
+
+USER app
 
 ENTRYPOINT ["/usr/local/bin/walletshield"]
 CMD ["-h"]

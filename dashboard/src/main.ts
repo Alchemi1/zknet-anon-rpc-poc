@@ -26,6 +26,30 @@ interface AnonRpcStatus {
   worker_hash: string;
 }
 
+interface KpsProbe {
+  success: boolean;
+  rtt_ms: number;
+  at: string;
+  err?: string;
+}
+
+interface KpsStats {
+  connected: boolean;
+  kps_addr: string;
+  uptime_seconds: number;
+  last_probe_at: string;
+  last_rtt_ms: number;
+  last_result: string;
+  min_rtt_ms: number;
+  max_rtt_ms: number;
+  avg_rtt_ms: number;
+  success_count: number;
+  error_count: number;
+  success_rate: number;
+  last_error: string;
+  history: KpsProbe[];
+}
+
 interface ProxyTestResult {
   success: boolean;
   response: string;
@@ -111,6 +135,60 @@ function renderAnonRpc(data: AnonRpcStatus) {
   }
 }
 
+function renderKpsStats(data: KpsStats) {
+  const statusEl = document.getElementById("kpsTransportStatus")!;
+  const connEl = document.getElementById("kpsConnStatus")!;
+  const addrEl = document.getElementById("kpsAddr")!;
+  const rttEl = document.getElementById("kpsLastRTT")!;
+  const blockEl = document.getElementById("kpsBlockNumber")!;
+  const rttStatsEl = document.getElementById("kpsRTTStats")!;
+  const rateEl = document.getElementById("kpsSuccessRate")!;
+  const countEl = document.getElementById("kpsProbeCount")!;
+  const uptimeEl = document.getElementById("kpsUptime")!;
+  const chartEl = document.getElementById("kpsRTTChart")!;
+
+  if (!data.connected) {
+    statusEl.textContent = "\u274c disconnected";
+    connEl.textContent = "disconnected";
+    connEl.style.color = "var(--red)";
+    addrEl.textContent = data.kps_addr || "-";
+    rttEl.textContent = "-";
+    rttStatsEl.textContent = "-";
+    rateEl.textContent = "-";
+    countEl.textContent = "-";
+    uptimeEl.textContent = "-";
+    chartEl.innerHTML = "";
+    return;
+  }
+
+  statusEl.textContent = "\u2705 connected";
+  connEl.textContent = "connected";
+  connEl.style.color = "var(--green)";
+  addrEl.textContent = data.kps_addr;
+
+  const lastRTT = data.last_rtt_ms || 0;
+  rttEl.textContent = lastRTT > 0 ? `${lastRTT}ms` : "pending...";
+  rttEl.style.color = lastRTT > 0 && lastRTT < 10000 ? "var(--green)" : "var(--yellow)";
+  blockEl.textContent = data.last_result || "-";
+  blockEl.style.color = data.last_result ? "var(--green)" : "var(--muted)";
+
+  rttStatsEl.textContent = `${data.min_rtt_ms || 0} / ${data.avg_rtt_ms || 0} / ${data.max_rtt_ms || 0} ms`;
+  rateEl.textContent = `${data.success_rate}%`;
+  rateEl.style.color = data.success_rate >= 80 ? "var(--green)" : data.success_rate >= 50 ? "var(--yellow)" : "var(--red)";
+  countEl.textContent = `${data.success_count} ok, ${data.error_count} err`;
+  uptimeEl.textContent = `${Math.floor(data.uptime_seconds / 60)}m ${data.uptime_seconds % 60}s`;
+
+  // RTT bar chart
+  const maxRTT = Math.max(...data.history.map((h) => h.rtt_ms), 1);
+  chartEl.innerHTML = data.history
+    .map((h) => {
+      const pct = Math.max(2, (h.rtt_ms / maxRTT) * 100);
+      const color = h.success ? "var(--green)" : "var(--red)";
+      return `<div style="flex:1;height:${pct}%;background:${color};border-radius:2px 2px 0 0;" title="${h.rtt_ms}ms ${h.success ? 'OK' : 'FAIL'}"></div>`;
+    })
+    .join("");
+}
+
 async function refreshAll() {
   document.getElementById("lastUpdated")!.textContent = "refreshing...";
 
@@ -133,6 +211,13 @@ async function refreshAll() {
     renderAnonRpc(anon);
   } catch (e) {
     console.error("Failed to get anon-rpc status:", e);
+  }
+
+  try {
+    const kpsStats = await api<KpsStats>("/api/kps-stats");
+    renderKpsStats(kpsStats);
+  } catch (e) {
+    console.error("Failed to get kps stats:", e);
   }
 
   const now = new Date();
@@ -206,6 +291,123 @@ function escapeHtml(text: string): string {
   return div.innerHTML;
 }
 
+async function sendKpsRpc() {
+  const btn = document.getElementById("kpsRpcBtn") as HTMLButtonElement;
+  const resultDiv = document.getElementById("kpsRpcResult")!;
+  const method = (document.getElementById("kpsRpcMethod") as HTMLInputElement).value;
+  const params = (document.getElementById("kpsRpcParams") as HTMLInputElement).value;
+
+  btn.disabled = true;
+  resultDiv.style.display = "block";
+  resultDiv.className = "test-result pending";
+  resultDiv.textContent = "Sending via KPS...";
+
+  let parsed: any;
+  try { parsed = JSON.parse(params); } catch { parsed = params; }
+
+  const body = JSON.stringify({
+    jsonrpc: "2.0", method, params: Array.isArray(parsed) ? parsed : [], id: 1
+  });
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 65000);
+    const res = await fetch("/api/kps-rpc", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body, signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+    const data = await res.json();
+    if (data.error) {
+      resultDiv.className = "test-result failure";
+      resultDiv.textContent = `Error: ${data.error}`;
+      if (data.rtt_ms) resultDiv.textContent += ` (${data.rtt_ms}ms)`;
+    } else {
+      resultDiv.className = "test-result success";
+      let pretty = data.result;
+      try { pretty = JSON.stringify(JSON.parse(data.result), null, 2); } catch {}
+      resultDiv.innerHTML = `<pre style="margin:0;font-size:12px;white-space:pre-wrap;">${escapeHtml(pretty)}</pre><div class="duration">${data.rtt_ms}ms via KPS</div>`;
+    }
+  } catch (e) {
+    resultDiv.className = "test-result failure";
+    resultDiv.textContent = `Request failed: ${e}`;
+  }
+  btn.disabled = false;
+}
+
+let bwTimer: ReturnType<typeof setInterval> | null = null;
+let bwHistory: { balance: number; rtt: number }[] = [];
+
+async function toggleBalanceWatch() {
+  const btn = document.getElementById("bwBtn") as HTMLButtonElement;
+  const address = (document.getElementById("bwAddress") as HTMLInputElement).value.trim();
+  const balanceEl = document.getElementById("bwBalance")!;
+  const rttEl = document.getElementById("bwRTT")!;
+  const updatedEl = document.getElementById("bwUpdated")!;
+  const chartEl = document.getElementById("bwChart")!;
+
+  if (bwTimer) {
+    clearInterval(bwTimer);
+    bwTimer = null;
+    btn.textContent = "Start Watching";
+    btn.style.background = "var(--blue)";
+    return;
+  }
+
+  if (!address.match(/^0x[a-fA-F0-9]{40}$/)) {
+    balanceEl.textContent = "invalid address";
+    return;
+  }
+
+  btn.textContent = "Watching...";
+  btn.style.background = "var(--red)";
+
+  const poll = async () => {
+    const body = JSON.stringify({
+      jsonrpc: "2.0", method: "eth_getBalance",
+      params: [address, "latest"], id: 1
+    });
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+      const res = await fetch("/api/kps-rpc", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body, signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+      const data = await res.json();
+      if (data.result && !data.error) {
+        const wei = BigInt(data.result);
+        const eth = Number(wei) / 1e18;
+        const display = eth >= 0.01 ? eth.toFixed(4) : eth.toFixed(8);
+        balanceEl.textContent = `${display} ETH`;
+        balanceEl.style.color = "var(--green)";
+        rttEl.textContent = `${data.rtt_ms}ms`;
+        updatedEl.textContent = new Date().toLocaleTimeString();
+        bwHistory.push({ balance: eth, rtt: data.rtt_ms || 0 });
+        if (bwHistory.length > 30) bwHistory.shift();
+        const maxB = Math.max(...bwHistory.map(h => h.balance), 0.001);
+        chartEl.innerHTML = bwHistory.map(h => {
+          const pct = Math.max(2, (h.balance / maxB) * 100);
+          return `<div style="flex:1;height:${pct}%;background:var(--green);border-radius:1px 1px 0 0;" title="${h.balance.toFixed(4)} ETH ${h.rtt}ms"></div>`;
+        }).join("");
+      } else {
+        balanceEl.textContent = data.error || "error";
+        balanceEl.style.color = "var(--red)";
+        rttEl.textContent = data.rtt_ms ? `${data.rtt_ms}ms` : "-";
+      }
+    } catch (e) {
+      balanceEl.textContent = "request failed";
+      balanceEl.style.color = "var(--red)";
+    }
+  };
+
+  bwHistory = [];
+  chartEl.innerHTML = "";
+  poll();
+  bwTimer = setInterval(poll, 10000);
+}
+
 // Initialize
 document.addEventListener("DOMContentLoaded", () => {
   const logSelector = document.getElementById("logSelector") as HTMLSelectElement;
@@ -222,4 +424,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   (window as any).refreshAll = refreshAll;
   (window as any).runProxyTest = runProxyTest;
+  (window as any).sendKpsRpc = sendKpsRpc;
+  (window as any).toggleBalanceWatch = toggleBalanceWatch;
 });

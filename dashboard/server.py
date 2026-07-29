@@ -60,6 +60,10 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         if self.path.startswith("/api/logs/"):
             container = self.path.split("/")[-1]
             return self.api_logs(container)
+        if self.path == "/api/kps-stats":
+            return self.api_kps_stats()
+        if self.path == "/api/kps-rpc":
+            return self.api_kps_rpc()
         if self.path == "/api/test":
             return self.api_test()
         return super().do_GET()
@@ -67,6 +71,8 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/api/test":
             return self.api_test()
+        if self.path == "/api/kps-rpc":
+            return self.api_kps_rpc()
         return self.send_error(404)
 
     def send_json(self, data):
@@ -235,6 +241,41 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
         except Exception as e:
             lines = [{"time": "", "text": f"error: {e}"}]
         self.send_json(lines)
+
+    def api_kps_stats(self):
+        try:
+            r = subprocess.run(
+                ["curl", "-s", "--max-time", "5", "http://127.0.0.1:9206/stats"],
+                capture_output=True, text=True, timeout=6
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                data = json.loads(r.stdout)
+                self.send_json(data)
+                return
+        except Exception:
+            pass
+        self.send_json({"connected": False, "error": "kps-monitor unreachable"})
+
+    def api_kps_rpc(self):
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length) if content_length > 0 else b"{}"
+        try:
+            r = subprocess.run(
+                ["curl", "-s", "--max-time", "60", "-X", "POST", "http://127.0.0.1:9206/rpc",
+                 "-H", "Content-Type: application/json",
+                 "-d", body.decode()],
+                capture_output=True, text=True, timeout=65
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                self.send_json(json.loads(r.stdout))
+                return
+        except subprocess.TimeoutExpired:
+            self.send_json({"error": "KPS RPC timeout (60s)", "rtt_ms": 60000})
+            return
+        except Exception as e:
+            self.send_json({"error": str(e)})
+            return
+        self.send_json({"error": "KPS RPC failed", "rtt_ms": 0})
 
     def api_test(self):
         import time, subprocess

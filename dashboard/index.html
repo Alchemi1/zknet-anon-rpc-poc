@@ -214,6 +214,81 @@
       </div>
 
       <div class="card">
+        <h2>KPS RPC</h2>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="kpsRpcMethod" type="text" value="eth_blockNumber" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="method (e.g. eth_blockNumber)">
+          <button class="test-btn" id="kpsRpcBtn" onclick="sendKpsRpc()" style="white-space:nowrap;">Send via KPS</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="kpsRpcParams" type="text" value="[]" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder='params JSON (e.g. [] or ["0x...", "latest"])'>
+        </div>
+        <div id="kpsRpcResult" class="test-result" style="display:none;"></div>
+      </div>
+
+      <div class="card" id="balanceWatcherCard">
+        <h2>Balance Watcher <span style="font-size:11px;font-weight:400;color:var(--muted);text-transform:none;">via KPS</span></h2>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="bwAddress" type="text" value="0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="ETH address (0x...)">
+          <button class="test-btn" id="bwBtn" onclick="toggleBalanceWatch()" style="white-space:nowrap;min-width:100px;">Start Watching</button>
+        </div>
+        <div style="text-align:center;padding:16px 0;">
+          <div style="font-size:32px;font-weight:700;font-family:monospace;" id="bwBalance">—</div>
+          <div style="font-size:13px;color:var(--muted);margin-top:4px;" id="bwLabel">ETH</div>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">RTT</span>
+          <span class="stat-value" id="bwRTT">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Last Update</span>
+          <span class="stat-value" id="bwUpdated">-</span>
+        </div>
+        <div style="margin-top:8px;">
+          <div style="display:flex;gap:2px;align-items:end;height:24px;" id="bwChart"></div>
+        </div>
+      </div>
+
+      <div class="card" id="kpsTransportCard">
+        <h2>KPS Transport <span id="kpsTransportStatus" style="font-size:11px;font-weight:400;color:var(--muted);text-transform:none;">connecting...</span></h2>
+        <div class="stat-row">
+          <span class="stat-label">Connection</span>
+          <span class="stat-value" id="kpsConnStatus">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">KPS Address</span>
+          <span class="stat-value" id="kpsAddr" style="font-size:11px;word-break:break-all;">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Last RTT</span>
+          <span class="stat-value" id="kpsLastRTT">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Block Number</span>
+          <span class="stat-value" id="kpsBlockNumber" style="font-family:monospace;">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Min / Avg / Max</span>
+          <span class="stat-value" id="kpsRTTStats">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Success Rate</span>
+          <span class="stat-value" id="kpsSuccessRate">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Probes</span>
+          <span class="stat-value" id="kpsProbeCount">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Uptime</span>
+          <span class="stat-value" id="kpsUptime">-</span>
+        </div>
+        <div style="margin-top:8px;">
+          <div style="display:flex;gap:2px;align-items:end;height:32px;" id="kpsRTTChart"></div>
+          <div style="font-size:10px;color:var(--muted);margin-top:4px;text-align:center;">RTT history (last 20 probes)</div>
+        </div>
+      </div>
+
+      <div class="card">
         <h2>HTTP Proxy Test</h2>
         <p style="font-size:13px;color:var(--muted);margin-bottom:8px;">
           Send eth_blockNumber through the mixnet

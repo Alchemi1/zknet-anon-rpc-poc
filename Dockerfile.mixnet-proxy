@@ -27,11 +27,15 @@ FROM --platform=linux/${TARGETARCH} arm64v8/debian:bookworm-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && addgroup --system --gid 1001 app \
+    && adduser --system --uid 1001 --ingroup app --no-create-home app
 
 COPY --from=builder /dest/mixnet-proxy /usr/local/bin/
 
-RUN mkdir -p /var/lib/mixnet-proxy
+RUN mkdir -p /var/lib/mixnet-proxy && chown app:app /var/lib/mixnet-proxy
+
+USER app
 
 EXPOSE 1080 9090
 
