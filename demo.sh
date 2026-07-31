@@ -46,7 +46,8 @@ else
   # 2. HTTP proxy via walletshield (port 9200) - may block
   echo ""
   echo "--- 2. HTTP Proxy (walletshield :9200) ---"
-  R=$(timeout 35 curl -s --max-time 30 -X POST http://127.0.0.1:9200/ethereum \
+  R=$(timeout 35 curl -s --max-time 30 -X POST http://127.0.0.1:9200/ \
+    -H "Host: ethereum-sepolia.publicnode.com" \
     -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' 2>/dev/null || echo "")
   B=$(echo "$R" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('result',''))" 2>/dev/null || echo "")
