@@ -143,7 +143,7 @@ func buildHTTPRequest(rpcHost string, bodyBytes []byte) []byte {
 }
 
 func doRPC(conn kps.Conn, rpcHost string, bodyBytes []byte) (result json.RawMessage, rttMs int64, rpcErr string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 	start := time.Now()
 	stream, err := conn.OpenStream(ctx)
@@ -244,14 +244,17 @@ func main() {
 		}
 	}()
 
+	backoffCount := 0
 	for {
 		kpsAddr, err := fetchKPSAddr(*bootURL)
 		if err != nil {
-			myLog.Printf("fetch boot: %s (retry in 5s)", err)
+			backoffCount++
+			delay := time.Duration(minInt(5<<minInt(backoffCount, 3), 60)) * time.Second
+			myLog.Printf("fetch boot: %s (retry in %v)", err, delay)
 			st.mu.Lock()
 			st.connected = false
 			st.mu.Unlock()
-			time.Sleep(5 * time.Second)
+			time.Sleep(delay)
 			continue
 		}
 		myLog.Printf("KPS address: %s", kpsAddr)
@@ -265,17 +268,21 @@ func main() {
 		}
 		connMu.Unlock()
 
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		conn, err := kps.Dial(ctx, kpsAddr)
 		cancel()
 		if err != nil {
-			myLog.Printf("kps.Dial: %s (retry in 5s)", err)
+			backoffCount++
+			delay := time.Duration(minInt(5<<minInt(backoffCount, 3), 60)) * time.Second
+			myLog.Printf("kps.Dial: %s (retry in %v)", err, delay)
 			st.mu.Lock()
 			st.connected = false
 			st.mu.Unlock()
-			time.Sleep(5 * time.Second)
+			time.Sleep(delay)
 			continue
 		}
+
+		backoffCount = 0
 
 		connMu.Lock()
 		currentConn = conn
@@ -289,7 +296,12 @@ func main() {
 			time.Sleep(*interval)
 			result, rttMs, rpcErr := doRPC(conn, *rpcHost, buildETHBlockNumberBody())
 			if rpcErr != "" {
-				myLog.Printf("probe FAIL: %s", rpcErr)
+				myLog.Printf("probe FAIL (attempt 1): %s", rpcErr)
+				time.Sleep(3 * time.Second)
+				result, rttMs, rpcErr = doRPC(conn, *rpcHost, buildETHBlockNumberBody())
+			}
+			if rpcErr != "" {
+				myLog.Printf("probe FAIL (retry): %s", rpcErr)
 				st.record(probeResult{Success: false, Err: rpcErr})
 				myLog.Printf("reconnecting...")
 				break
@@ -308,5 +320,12 @@ func buildETHBlockNumberBody() []byte {
 		"id":      1,
 	}
 	b, _ := json.Marshal(body)
+	return b
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
 	return b
 }
