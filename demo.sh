@@ -108,6 +108,32 @@ else
   else
     fail "KPS RPC" "$(echo "$R" | head -c 200)"
   fi
+
+  # 6b. Anonymous tx broadcast (eth_sendRawTransaction through mixnet)
+  echo ""
+  echo "--- 6b. Anonymous tx broadcast (eth_sendRawTransaction) ---"
+  if [ -x ./kps-sendtx/kps-sendtx ]; then
+    if [ -n "${SEND_PK:-}" ]; then
+      SENDTX=$(timeout 180 ./kps-sendtx/kps-sendtx -pk "$SEND_PK" 2>&1 || echo "EXIT=$?")
+      if echo "$SENDTX" | grep -q "TX BROADCAST OK"; then
+        ok "Broadcast via mixnet: $(echo "$SENDTX" | grep 'tx hash:' | sed 's/.*tx hash: //')"
+      else
+        fail "Broadcast via mixnet" "$(echo "$SENDTX" | tail -3)"
+      fi
+    else
+      # no funded key: prove end-to-end delivery by expecting a node-generated error
+      SENDTX=$(timeout 180 ./kps-sendtx/kps-sendtx 2>&1 || echo "EXIT=$?")
+      if echo "$SENDTX" | grep -q "insufficient funds"; then
+        ok "Broadcast path: request reached node via mixnet (insufficient-funds as expected)"
+      elif echo "$SENDTX" | grep -q "TX BROADCAST OK"; then
+        ok "Broadcast via mixnet: $(echo "$SENDTX" | grep 'tx hash:' | sed 's/.*tx hash: //')"
+      else
+        fail "Broadcast via mixnet" "$(echo "$SENDTX" | tail -3)"
+      fi
+    fi
+  else
+    skip "Broadcast (kps-sendtx binary not built)"
+  fi
 fi
 
 # 7-8: dashboard - independent of mixnet

@@ -158,21 +158,49 @@ curl -X POST http://127.0.0.1:9206/rpc \
   -d '{"jsonrpc":"2.0","method":"eth_getBalance","params":["0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045","latest"],"id":1}'
 ```
 
+## KPS SendTx (anonymous transaction broadcast)
+
+Signs an Ethereum transaction **locally** and broadcasts it through the mixnet via `kps-monitor /rpc` — the private key never leaves your machine and the recipient node never sees your IP.
+
+```bash
+# Build
+docker run --rm -v $(pwd)/kps-sendtx:/src -w /src golang:latest go build -o kps-sendtx .
+
+# Broadcast with a funded key (prints tx hash on Sepolia)
+./kps-sendtx/kps-sendtx -pk <hex_private_key> -to 0x... -value 1000000000000000
+
+# Without a key: generates a random key, signs, and proves end-to-end delivery
+# (node replies "insufficient funds" — proof the request reached the node via the mixnet)
+./kps-sendtx/kps-sendtx
+
+# Options
+#   -pk        private key hex (default: random)
+#   -to        recipient address
+#   -value     wei to send
+#   -chain-id  EIP-155 chain id (default 11155111 = Sepolia)
+#   -rpc       kps-monitor /rpc endpoint
+```
+
+Flow: `local signing (secp256k1 + keccak256, EIP-155) → kps-monitor /rpc → KPS :9201 → thin client → kpclientd → mixnet → http-proxy-server → eth_sendRawTransaction`. The nonce and gas price are also fetched **through the mixnet**, so no metadata leaks outside the private channel.
+
 ## Demo Script
 
 ```bash
 ./demo.sh
 ```
 
-Tests all 8 transport paths with per-step timeouts:
+Tests all 9 transport paths with per-step timeouts:
 1. Walletshield boot endpoint
 2. HTTP proxy via walletshield (`:9200`)
 3. Direct HTTP proxy (`:9205`)
 4. KPS client CLI
 5. KPS monitor stats
 6. KPS RPC on-demand
+6b. Anonymous tx broadcast (`eth_sendRawTransaction` via mixnet, with or without `SEND_PK`)
 7. Dashboard container status
 8. Dashboard KPS stats
+
+To run the broadcast with a real funded key: `SEND_PK=<hex> ./demo.sh`
 
 ## Security Audit
 
@@ -233,6 +261,11 @@ zknet-anon-rpc-poc/
 │   ├── main.go                    # Persistent KPS connection + /stats + /rpc
 │   ├── go.mod / go.sum
 │   └── kps-monitor                # Built binary
+├── kps-sendtx/                    # Anonymous tx broadcast tool (Go)
+│   ├── main.go                    # Local EIP-155 signing + broadcast via mixnet
+│   ├── main_test.go               # Address-derivation + RLP encoding tests
+│   ├── go.mod / go.sum
+│   └── kps-sendtx                 # Built binary
 ├── dashboard/
 │   ├── server.py                  # Python web dashboard
 │   ├── index.html                 # Frontend HTML
