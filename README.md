@@ -261,6 +261,7 @@ npm install
 ```
 zknet-anon-rpc-poc/
 ├── start.sh                        # All-in-one startup
+├── stop.sh                         # Graceful spin-down (kills host processes + docker compose down)
 ├── demo.sh                         # Full-stack demo script
 ├── Dockerfile.mixnet              # Katzenpost build
 ├── Dockerfile.mixnet-proxy        # Mixnet proxy build (arm64)
