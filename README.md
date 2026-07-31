@@ -188,8 +188,9 @@ Flow: `local signing (secp256k1 + keccak256, EIP-155) → kps-monitor /rpc → K
 The dashboard also has a **Private Broadcast** card that signs **in the browser** using ethers — the private key never leaves the page. It fetches nonce/gas/chain-id via `/api/kps-rpc`, signs locally, and sends only the signed raw tx through the mixnet:
 
 1. Open the dashboard (`http://127.0.0.1:3517`) → **Private Broadcast** card.
-2. Enter a private key (shown masked), recipient, and value in wei.
-3. Click **Sign & Broadcast via KPS** — result shows the tx hash with a link to Etherscan, or the node's error (which still proves the tx reached the node via the mixnet).
+2. A public demo key is pre-filled (0 balance, used for the standard demo — proves end-to-end delivery via the "insufficient funds" node response). Replace it with a funded key to confirm a real tx hash.
+3. Enter a recipient and value in wei.
+4. Click **Sign & Broadcast via KPS** — result shows the tx hash with a link to Etherscan, or the node's error (which still proves the tx reached the node via the mixnet).
 
 Build after editing the frontend:
 ```bash
