@@ -268,6 +268,78 @@
         <div id="bcResult" class="test-result" style="display:none;"></div>
       </div>
 
+      <div class="card" id="mempoolCard">
+        <h2>Mempool Watcher <span style="font-size:11px;font-weight:400;color:var(--muted);text-transform:none;">watch pending txs without being watched</span></h2>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">
+          Polls <code>eth_getBlockTransactionCountByNumber("pending")</code> through the mixnet — every request is anonymous.
+        </p>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <button class="test-btn" id="mwBtn" onclick="toggleMempoolWatch()" style="white-space:nowrap;min-width:110px;">Start Watching</button>
+        </div>
+        <div style="text-align:center;padding:12px 0;">
+          <div style="font-size:32px;font-weight:700;font-family:monospace;" id="mwCount">—</div>
+          <div style="font-size:13px;color:var(--muted);margin-top:4px;">pending transactions</div>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">RTT</span>
+          <span class="stat-value" id="mwRTT">-</span>
+        </div>
+        <div class="stat-row">
+          <span class="stat-label">Last Update</span>
+          <span class="stat-value" id="mwUpdated">-</span>
+        </div>
+        <div style="margin-top:8px;">
+          <div style="display:flex;gap:2px;align-items:end;height:24px;" id="mwChart"></div>
+        </div>
+      </div>
+
+      <div class="card" id="contractReaderCard">
+        <h2>Contract Reader <span style="font-size:11px;font-weight:400;color:var(--muted);text-transform:none;">anonymous eth_call</span></h2>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="crAddress" type="text" value="0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="contract address (0x...)">
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="crWallet" type="text" value="0xbdE0270f320000792fDB43BADF0be85183B773a5" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="wallet for balanceOf (0x...)">
+          <button class="test-btn" id="crBalanceBtn" onclick="contractRead('balanceOf')" style="white-space:nowrap;">balanceOf</button>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <button class="test-btn" id="crSupplyBtn" onclick="contractRead('totalSupply')" style="white-space:nowrap;background:var(--blue);">totalSupply</button>
+          <button class="test-btn" id="crSymbolBtn" onclick="contractRead('symbol')" style="white-space:nowrap;background:var(--blue);">symbol</button>
+          <button class="test-btn" id="crNameBtn" onclick="contractRead('name')" style="white-space:nowrap;background:var(--blue);">name</button>
+          <button class="test-btn" id="crDecimalsBtn" onclick="contractRead('decimals')" style="white-space:nowrap;background:var(--blue);">decimals</button>
+        </div>
+        <div id="crResult" class="test-result" style="display:none;"></div>
+      </div>
+
+      <div class="card" id="txTrackerCard">
+        <h2>Tx Tracker <span style="font-size:11px;font-weight:400;color:var(--muted);text-transform:none;">anonymous lookup</span></h2>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">
+          Look up any transaction by hash via <code>eth_getTransactionByHash</code> through the mixnet.
+        </p>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="ttHash" type="text" value="" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="tx hash (0x...)">
+          <button class="test-btn" id="ttBtn" onclick="lookupTx()" style="white-space:nowrap;">Look Up</button>
+        </div>
+        <div id="ttResult" class="test-result" style="display:none;"></div>
+      </div>
+
+      <div class="card" id="txSimCard">
+        <h2>Tx Simulator <span style="font-size:11px;font-weight:400;color:var(--muted);text-transform:none;">eth_estimateGas via mixnet</span></h2>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">
+          Estimate gas for a transaction without sending it — request routed anonymously.
+        </p>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="simFrom" type="text" value="0xbdE0270f320000792fDB43BADF0be85183B773a5" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="from (0x...)">
+          <input id="simTo" type="text" value="0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="to (0x...)">
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="simValue" type="text" value="0" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="value wei (0)">
+          <input id="simData" type="text" value="0x" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="data hex (0x)">
+          <button class="test-btn" id="simBtn" onclick="simulateTx()" style="white-space:nowrap;">Estimate Gas</button>
+        </div>
+        <div id="simResult" class="test-result" style="display:none;"></div>
+      </div>
+
       <div class="card" id="kpsTransportCard">
         <h2>KPS Transport <span id="kpsTransportStatus" style="font-size:11px;font-weight:400;color:var(--muted);text-transform:none;">connecting...</span></h2>
         <div class="stat-row">

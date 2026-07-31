@@ -134,6 +134,41 @@ else
   else
     skip "Broadcast (kps-sendtx binary not built)"
   fi
+
+  # 6c. Mempool watcher (pending tx count via mixnet)
+  echo ""
+  echo "--- 6c. Mempool watcher (pending tx count) ---"
+  R=$(timeout 65 curl -s --max-time 60 -X POST http://127.0.0.1:9206/rpc \
+    -d '{"jsonrpc":"2.0","method":"eth_getBlockTransactionCountByNumber","params":["pending"],"id":1}' 2>/dev/null || echo '{"error":"timeout"}')
+  M=$(echo "$R" | python3 -c "import sys,json; d=json.load(sys.stdin); print(int(d.get('result','0'),16) if d.get('result') else '')" 2>/dev/null || echo "")
+  if [ -n "$M" ]; then
+    ok "Mempool: $M pending txs"
+  else
+    fail "Mempool watcher" "$(echo "$R" | head -c 200)"
+  fi
+
+  # 6d. Contract reader (eth_call symbol on USDC via mixnet)
+  echo ""
+  echo "--- 6d. Contract reader (eth_call symbol) ---"
+  R=$(timeout 65 curl -s --max-time 60 -X POST http://127.0.0.1:9206/rpc \
+    -d '{"jsonrpc":"2.0","method":"eth_call","params":[{"to":"0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238","data":"0x95d89b41"},"latest"],"id":1}' 2>/dev/null || echo '{"error":"timeout"}')
+  if echo "$R" | grep -q '"result"'; then
+    ok "Contract reader: USDC symbol() returned ABI data"
+  else
+    fail "Contract reader" "$(echo "$R" | head -c 200)"
+  fi
+
+  # 6e. Tx simulator (eth_estimateGas via mixnet)
+  echo ""
+  echo "--- 6e. Tx simulator (eth_estimateGas) ---"
+  R=$(timeout 65 curl -s --max-time 60 -X POST http://127.0.0.1:9206/rpc \
+    -d '{"jsonrpc":"2.0","method":"eth_estimateGas","params":[{"from":"0xbdE0270f320000792fDB43BADF0be85183B773a5","to":"0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045","value":"0x0"}],"id":1}' 2>/dev/null || echo '{"error":"timeout"}')
+  G=$(echo "$R" | python3 -c "import sys,json; d=json.load(sys.stdin); print(int(d.get('result','0'),16) if d.get('result') else '')" 2>/dev/null || echo "")
+  if [ -n "$G" ]; then
+    ok "Tx simulator: gas estimate $G"
+  else
+    fail "Tx simulator" "$(echo "$R" | head -c 200)"
+  fi
 fi
 
 # 7-8: dashboard - independent of mixnet

@@ -192,6 +192,19 @@ The dashboard also has a **Private Broadcast** card that signs **in the browser*
 3. Enter a recipient and value in wei.
 4. Click **Sign & Broadcast via KPS** — result shows the tx hash with a link to Etherscan, or the node's error (which still proves the tx reached the node via the mixnet).
 
+### Dashboard: Mempool / Contract / Tx demo cards
+
+Four additional demo cards, all routed anonymously through the mixnet via `/api/kps-rpc`:
+
+| Card | RPC method | What it shows |
+|------|-----------|----------------|
+| **Mempool Watcher** | `eth_getBlockTransactionCountByNumber("pending")` | Live count of pending txs, polled every 10s with a history chart — watch the mempool without being watched |
+| **Contract Reader** | `eth_call` | Read any contract's `totalSupply` / `symbol` / `name` / `decimals` / `balanceOf` anonymously (defaults to USDC on Sepolia) |
+| **Tx Tracker** | `eth_getTransactionByHash` | Look up a tx hash and see block, from/to, value, gas |
+| **Tx Simulator** | `eth_estimateGas` | Estimate gas for an unsent tx (from/to/value/data) |
+
+> Note: the mixnet caps reply payloads at ~2000 bytes (`UserForwardPayloadLength`), so large responses (full blocks, transaction receipts) don't fit. These cards use small-response methods that traverse the mixnet reliably.
+
 Build after editing the frontend:
 ```bash
 cd dashboard && npx vite build
@@ -211,6 +224,9 @@ Tests all 9 transport paths with per-step timeouts:
 5. KPS monitor stats
 6. KPS RPC on-demand
 6b. Anonymous tx broadcast (`eth_sendRawTransaction` via mixnet, with or without `SEND_PK`)
+6c. Mempool watcher (`eth_getBlockTransactionCountByNumber("pending")`)
+6d. Contract reader (`eth_call` symbol on USDC)
+6e. Tx simulator (`eth_estimateGas`)
 7. Dashboard container status
 8. Dashboard KPS stats
 
