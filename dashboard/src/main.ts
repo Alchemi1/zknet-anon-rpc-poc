@@ -1,3 +1,5 @@
+import { Wallet } from "ethers";
+
 interface ContainerInfo {
   name: string;
   status: string;
@@ -335,6 +337,82 @@ async function sendKpsRpc() {
   btn.disabled = false;
 }
 
+async function kpsRpcCall(method: string, params: any[], timeoutMs = 90000): Promise<any> {
+  const body = JSON.stringify({ jsonrpc: "2.0", method, params, id: 1 });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch("/api/kps-rpc", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body, signal: controller.signal,
+    });
+    const data = await res.json();
+    if (data.error) throw new Error(data.error);
+    return data;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
+async function sendPrivateBroadcast() {
+  const btn = document.getElementById("bcBtn") as HTMLButtonElement;
+  const resultDiv = document.getElementById("bcResult")!;
+  const keyInput = (document.getElementById("bcPrivateKey") as HTMLInputElement).value.trim();
+  const toInput = (document.getElementById("bcTo") as HTMLInputElement).value.trim();
+  const valueInput = (document.getElementById("bcValue") as HTMLInputElement).value.trim();
+
+  btn.disabled = true;
+  resultDiv.style.display = "block";
+  resultDiv.className = "test-result pending";
+  resultDiv.textContent = "Preparing...";
+
+  try {
+    if (!keyInput) throw new Error("private key required");
+    if (!toInput.match(/^0x[a-fA-F0-9]{40}$/)) throw new Error("invalid to address");
+
+    const key = keyInput.startsWith("0x") ? keyInput : "0x" + keyInput;
+    const wallet = new Wallet(key);
+    const value = BigInt(valueInput || "0");
+    resultDiv.textContent = `Signed locally from ${wallet.address}. Fetching nonce + gas via mixnet...`;
+
+    const [nonceData, gasData, chainData] = await Promise.all([
+      kpsRpcCall("eth_getTransactionCount", [wallet.address, "pending"]),
+      kpsRpcCall("eth_gasPrice", []),
+      kpsRpcCall("eth_chainId", []),
+    ]);
+    const nonce = BigInt(nonceData.result);
+    const gasPrice = BigInt(gasData.result);
+    const chainId = Number(BigInt(chainData.result));
+
+    resultDiv.textContent = `nonce=${nonce} gasPrice=${gasPrice} chainId=${chainId}. Signing locally...`;
+
+    const rawTx = await wallet.signTransaction({
+      to: toInput,
+      value,
+      nonce,
+      gasPrice,
+      gasLimit: 21000,
+      chainId,
+      type: 0,
+    });
+
+    resultDiv.textContent = "Broadcasting signed tx through mixnet...";
+    const start = Date.now();
+    const txResult = await kpsRpcCall("eth_sendRawTransaction", [rawTx], 120000);
+    const rtt = Date.now() - start;
+    const hash = txResult.result;
+    resultDiv.className = "test-result success";
+    resultDiv.innerHTML = `<pre style="margin:0;font-size:12px;white-space:pre-wrap;">tx hash: ${escapeHtml(hash)}</pre><div class="duration">${rtt}ms via mixnet · <a href="https://sepolia.etherscan.io/tx/${escapeHtml(hash)}" target="_blank" rel="noopener">view on Etherscan</a></div>`;
+  } catch (e: any) {
+    resultDiv.className = "test-result failure";
+    resultDiv.textContent = `Broadcast failed: ${e.message || e}`;
+    if ((e.message || "").includes("insufficient funds")) {
+      resultDiv.textContent += "\n(Note: the signed tx DID reach the node via the mixnet — fund the sender on Sepolia and retry.)";
+    }
+  }
+  btn.disabled = false;
+}
+
 let bwTimer: ReturnType<typeof setInterval> | null = null;
 let bwHistory: { balance: number; rtt: number }[] = [];
 
@@ -425,5 +503,6 @@ document.addEventListener("DOMContentLoaded", () => {
   (window as any).refreshAll = refreshAll;
   (window as any).runProxyTest = runProxyTest;
   (window as any).sendKpsRpc = sendKpsRpc;
+  (window as any).sendPrivateBroadcast = sendPrivateBroadcast;
   (window as any).toggleBalanceWatch = toggleBalanceWatch;
 });

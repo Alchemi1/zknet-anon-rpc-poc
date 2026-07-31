@@ -248,6 +248,25 @@
         </div>
       </div>
 
+      <div class="card" id="broadcastCard">
+        <h2>Private Broadcast <span style="font-size:11px;font-weight:400;color:var(--muted);text-transform:none;">sign in browser, send via mixnet</span></h2>
+        <p style="font-size:12px;color:var(--muted);margin-bottom:8px;">
+          The transaction is signed locally in your browser (ethers). Your private key never leaves this page;
+          only the signed raw transaction is sent through the mixnet via <code>/api/kps-rpc</code>.
+        </p>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="bcPrivateKey" type="password" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="private key hex (0x... or bare hex)">
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <input id="bcTo" type="text" value="0x0000000000000000000000000000000000000000" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="to address (0x...)">
+          <input id="bcValue" type="text" value="0" style="width:110px;padding:6px;border-radius:4px;border:1px solid var(--border);background:var(--bg);color:var(--text);font-size:12px;font-family:monospace;" placeholder="value wei">
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <button class="test-btn" id="bcBtn" onclick="sendPrivateBroadcast()" style="white-space:nowrap;">Sign &amp; Broadcast via KPS</button>
+        </div>
+        <div id="bcResult" class="test-result" style="display:none;"></div>
+      </div>
+
       <div class="card" id="kpsTransportCard">
         <h2>KPS Transport <span id="kpsTransportStatus" style="font-size:11px;font-weight:400;color:var(--muted);text-transform:none;">connecting...</span></h2>
         <div class="stat-row">

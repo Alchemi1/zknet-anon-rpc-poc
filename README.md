@@ -183,6 +183,19 @@ docker run --rm -v $(pwd)/kps-sendtx:/src -w /src golang:latest go build -o kps-
 
 Flow: `local signing (secp256k1 + keccak256, EIP-155) → kps-monitor /rpc → KPS :9201 → thin client → kpclientd → mixnet → http-proxy-server → eth_sendRawTransaction`. The nonce and gas price are also fetched **through the mixnet**, so no metadata leaks outside the private channel.
 
+### Dashboard: Private Broadcast card
+
+The dashboard also has a **Private Broadcast** card that signs **in the browser** using ethers — the private key never leaves the page. It fetches nonce/gas/chain-id via `/api/kps-rpc`, signs locally, and sends only the signed raw tx through the mixnet:
+
+1. Open the dashboard (`http://127.0.0.1:3517`) → **Private Broadcast** card.
+2. Enter a private key (shown masked), recipient, and value in wei.
+3. Click **Sign & Broadcast via KPS** — result shows the tx hash with a link to Etherscan, or the node's error (which still proves the tx reached the node via the mixnet).
+
+Build after editing the frontend:
+```bash
+cd dashboard && npx vite build
+```
+
 ## Demo Script
 
 ```bash
