@@ -60,25 +60,17 @@ All containers use `network_mode: host`. Docker security: `no-new-privileges`, `
 
 ## Quick Start
 
+Single command — `start.sh` bootstraps everything:
+
 ```bash
-# 0. Ensure port 9200 is free (stop host walletshield if running)
-systemctl --user stop walletshield.service 2>/dev/null || true
-
-# 1. Build the mixnet Docker image (~30 min)
-docker build -t zeros/mixnet-node:amd64 -f Dockerfile.mixnet .
-
-# 2. Build the walletshield binary
-docker build -t walletshield -f Dockerfile.walletshield.local .
-docker create --name ws walletshield && docker cp ws:/usr/local/bin/walletshield walletshield/walletshield-kps && docker rm ws
-
-# 3. Build kps-client and kps-monitor
-docker run --rm -v $(pwd)/kps-client:/src -w /src golang:latest go build -o kps-client .
-docker run --rm -v $(pwd)/kps-monitor:/src -w /src golang:latest go build -o kps-monitor .
-
-# 4. Start the full stack
+git clone https://github.com/Alchemi1/zknet-anon-rpc-poc.git
+cd zknet-anon-rpc-poc
 ./start.sh
-# → Dashboard at http://127.0.0.1:3517
 ```
+
+On first run it handles: submodule clone, Docker image build (~15 min), Go binary compilation, mixnet startup, PKI wait, service launch, dashboard build. Only Docker is required — no local Go/Node toolchain needed.
+
+Subsequent runs skip already-built artifacts and start in ~30 seconds. Dashboard at `http://127.0.0.1:3517`.
 
 Or run individual steps:
 
