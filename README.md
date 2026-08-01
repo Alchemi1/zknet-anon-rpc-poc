@@ -1,4 +1,4 @@
-# ZKNetwork + Anon-RPC Proof of Concept
+# ZKNet Walletshield + PSE Anon-RPC Proof of Concept
 
 ![Dashboard Screenshot](dashboard-screenshot.png)
 
