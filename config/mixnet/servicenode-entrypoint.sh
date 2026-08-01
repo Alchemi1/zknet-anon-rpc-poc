@@ -10,6 +10,15 @@ exec /usr/local/bin/http-proxy-server.bin -log_dir /var/lib/katzenpost/serviceno
 WRAP
   chmod +x /usr/local/bin/http-proxy-server
 fi
+if [ ! -f /usr/local/bin/echo-plugin ]; then
+  if [ -f /usr/local/bin/echo-plugin.bin ]; then
+    cat > /usr/local/bin/echo-plugin << 'ECHOWRAP'
+#!/bin/sh
+exec /usr/local/bin/echo-plugin.bin -log_dir /var/lib/katzenpost/servicenode1 -log_level DEBUG "$@"
+ECHOWRAP
+    chmod +x /usr/local/bin/echo-plugin
+  fi
+fi
 if [ ! -f /usr/local/bin/chatd ]; then
   cat > /usr/local/bin/chatd << 'CHATDUM'
 #!/bin/sh

@@ -1,6 +1,7 @@
 # Build artifacts
 walletshield/walletshield-kps
 kps-sendtx/kps-sendtx
+kps-monitor/kps-monitor
 zkn-anon-rpc-worker/dist/
 zkn-anon-rpc-worker/node_modules/
 
