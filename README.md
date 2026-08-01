@@ -1,5 +1,7 @@
 # ZKNetwork + Anon-RPC Proof of Concept
 
+![Dashboard Screenshot](dashboard-screenshot.png)
+
 Anon-RPC wallets route Ethereum JSON-RPC through the ZKNetwork Katzenpost mixnet. This repo builds the entire Katzenpost mixnet from source, runs it in Docker, and provides **three access paths** for Ethereum RPC:
 
 - **HTTP proxy** — `http-proxy-client` on `:9205` accepts plain HTTP, forwards through mixnet
