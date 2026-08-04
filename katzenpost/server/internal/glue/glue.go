@@ -1,0 +1,126 @@
+// glue.go - Katzenpost server internal glue.
+// Copyright (C) 2017  Yawning Angel.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+// Package glue implements the glue structure that ties all the internal
+// subpackages together.
+package glue
+
+import (
+	"github.com/katzenpost/hpqc/kem"
+	"github.com/katzenpost/hpqc/sign"
+	"github.com/katzenpost/katzenpost/core/log"
+	"github.com/katzenpost/katzenpost/core/pki"
+	"github.com/katzenpost/katzenpost/core/sphinx/constants"
+	"github.com/katzenpost/katzenpost/core/thwack"
+	"github.com/katzenpost/katzenpost/core/wire"
+	"github.com/katzenpost/katzenpost/loops"
+	"github.com/katzenpost/katzenpost/server/config"
+	"github.com/katzenpost/katzenpost/server/internal/mixkey"
+	"github.com/katzenpost/katzenpost/server/internal/packet"
+	"github.com/katzenpost/katzenpost/server/internal/pkicache"
+	"github.com/katzenpost/katzenpost/server/spool"
+)
+
+// Glue is the structure that binds the internal components together.
+type Glue interface {
+	Config() *config.Config
+	LogBackend() *log.Backend
+	IdentityKey() sign.PrivateKey
+	IdentityPublicKey() sign.PublicKey
+	LinkKey() kem.PrivateKey
+
+	Management() *thwack.Server
+	MixKeys() MixKeys
+	PKI() PKI
+	Gateway() Gateway
+	ServiceNode() ServiceNode
+	Scheduler() Scheduler
+	Connector() Connector
+	Listeners() []Listener
+	Decoy() Decoy
+
+	ReshadowCryptoWorkers()
+}
+
+type MixKeys interface {
+	Halt()
+	Generate(uint64) (bool, error)
+	Prune() bool
+	Get(uint64) ([]byte, bool)
+	Shadow(map[uint64]*mixkey.MixKey)
+}
+
+type PKI interface {
+	Halt()
+	StartWorker()
+	OutgoingDestinations() map[[constants.NodeIDLength]byte]*pki.MixDescriptor
+	AuthenticateConnection(*wire.PeerCredentials, bool) (*pki.MixDescriptor, bool, bool)
+	GetRawConsensus(uint64) ([]byte, error)
+	CurrentDocument() (*pki.Document, error)
+	HasUsableDocument() bool
+}
+
+type Gateway interface {
+	Halt()
+	Spool() spool.Spool
+	AuthenticateClient(*wire.PeerCredentials) bool
+	OnPacket(*packet.Packet)
+}
+
+type ServiceNode interface {
+	Halt()
+	OnPacket(*packet.Packet)
+	KaetzchenForPKI() (map[string]map[string]interface{}, map[string]map[string]interface{}, error)
+}
+
+type Scheduler interface {
+	Halt()
+	OnNewMixMaxDelay(uint64)
+	OnPacket(*packet.Packet)
+}
+
+type Connector interface {
+	Halt()
+	DispatchPacket(*packet.Packet)
+	IsValidForwardDest(*[constants.NodeIDLength]byte) bool
+	ForceUpdate()
+}
+
+type Listener interface {
+	Halt()
+	CloseOldConns(interface{}) error
+	GetConnIdentities() (map[[constants.RecipientIDLength]byte]interface{}, error)
+	// OnNewBucketParams delivers freshly derived token-bucket
+	// parameters to each listener after a consensus-document update.
+	// sendTokenIncrNs is the refill interval in nanoseconds (one
+	// token added per increment); maxSendTokens is the bucket cap.
+	// Both zero disables the rate limit on this listener.
+	OnNewBucketParams(sendTokenIncrNs, maxSendTokens uint64)
+	// Notify signals that fresh spool work has been enqueued for the
+	// given client identity (the first RecipientIDLength bytes of the
+	// recipient). The listener nudges the matching connection's sender
+	// to drain the spool, or no-ops if the client is not connected
+	// here.
+	Notify(clientID []byte)
+}
+
+type Decoy interface {
+	Halt()
+	OnNewDocument(*pkicache.Entry)
+	OnPacket(*packet.Packet)
+	ExpectReply(pkt *packet.Packet) bool
+	GetStats(doPublishEpoch uint64) *loops.LoopStats
+}

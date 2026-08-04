@@ -1,0 +1,211 @@
+// commands_vectors_test.go - Test vector tests for wire protocol commands.
+// Copyright (C) 2019  David Stainton.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+package commands
+
+import (
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"os"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+
+	ecdh "github.com/katzenpost/hpqc/nike/x25519"
+	"github.com/katzenpost/hpqc/util"
+	"github.com/katzenpost/katzenpost/core/sphinx"
+	"github.com/katzenpost/katzenpost/core/sphinx/geo"
+)
+
+const wireCommandsVectorsFile = "testdata/wire_commands_vectors.json"
+
+const payload = "A free man must be able to endure it when his fellow men act and live otherwise than he considers proper. He must free himself from the habit, just as soon as something does not please him, of calling for the police."
+
+type commandsTest struct {
+	NoOp               string
+	Disconnect         string
+	SendPacketPayload  string
+	SendPacket         string
+	RetrieveMessageSeq uint32
+	RetrieveMessage    string
+	Message            string
+	MessageSeq         uint32
+	MessagePayload     string
+	GetConsensus       string
+	GetConsensusEpoch  uint64
+	Consensus          string
+	ConsensusPayload   string
+	ConsensusErrorCode uint8
+}
+
+func NoTestBuildCommandVectors(t *testing.T) {
+	assert := assert.New(t)
+
+	nike := ecdh.Scheme(rand.Reader)
+	//forwardPayloadLength := len(payload) + (sphinx.SphinxPlaintextHeaderLength + 556)
+	nrHops := 5
+
+	//geo := geo.GeometryFromForwardPayloadLength(nike, forwardPayloadLength, nrHops)
+	geo := geo.GeometryFromUserForwardPayloadLength(nike, len(payload), true, nrHops)
+	cmds := &Commands{
+		geo: geo,
+	}
+
+	noOp := NoOp{
+		Cmds: cmds,
+	}
+	disconnect := &Disconnect{
+		Cmds: cmds,
+	}
+
+	sendPacket := &SendPacket{SphinxPacket: []byte(payload), Cmds: cmds}
+
+	var retrieveMessageSeq uint32 = 12345
+	retrieveMessage := &RetrieveMessage{Sequence: retrieveMessageSeq, Cmds: cmds}
+
+	var msgSeq uint32 = 9876
+
+	msgPayload := make([]byte, cmds.geo.PayloadTagLength+cmds.geo.ForwardPayloadLength)
+	_, err := rand.Read(msgPayload)
+	assert.NoError(err)
+	cmdMessage := &Message{
+		Geo:      geo,
+		Cmds:     cmds,
+		Sequence: msgSeq,
+		Payload:  msgPayload,
+	}
+
+	getConsensusEpoch := uint64(123)
+	getConsensus := &GetConsensus{
+		Epoch: getConsensusEpoch,
+		Cmds:  cmds,
+	}
+
+	consensus := &Consensus{
+		Payload:   []byte("TANSTAFL: There's ain't no such thing as a free lunch."),
+		ErrorCode: ConsensusOk,
+	}
+
+	cmdsTest := commandsTest{
+		NoOp:               hex.EncodeToString(noOp.ToBytes()),
+		Disconnect:         hex.EncodeToString(disconnect.ToBytes()),
+		SendPacketPayload:  hex.EncodeToString([]byte(payload)),
+		SendPacket:         hex.EncodeToString(sendPacket.ToBytes()),
+		RetrieveMessage:    hex.EncodeToString(retrieveMessage.ToBytes()),
+		RetrieveMessageSeq: retrieveMessageSeq,
+		Message:            hex.EncodeToString(cmdMessage.ToBytes()),
+		MessageSeq:         msgSeq,
+		MessagePayload:     hex.EncodeToString(msgPayload),
+		GetConsensus:       hex.EncodeToString(getConsensus.ToBytes()),
+		GetConsensusEpoch:  getConsensusEpoch,
+		Consensus:          hex.EncodeToString(consensus.ToBytes()),
+		ConsensusPayload:   hex.EncodeToString(consensus.Payload),
+		ConsensusErrorCode: consensus.ErrorCode,
+	}
+
+	serialized, err := json.Marshal(cmdsTest)
+	assert.NoError(err)
+	err = os.WriteFile(wireCommandsVectorsFile, serialized, 0644)
+	assert.NoError(err)
+}
+
+func TestCommandVectors(t *testing.T) {
+	assert := assert.New(t)
+
+	serialized, err := os.ReadFile(wireCommandsVectorsFile)
+	assert.NoError(err)
+	cmdsTest := commandsTest{}
+	err = json.Unmarshal(serialized, &cmdsTest)
+	assert.NoError(err)
+
+	nike := ecdh.Scheme(rand.Reader)
+
+	nrHops := 5
+
+	geo := geo.GeometryFromUserForwardPayloadLength(nike, len(payload), true, nrHops)
+	s := sphinx.NewSphinx(geo)
+
+	cmds := &Commands{
+		geo: s.Geometry(),
+	}
+
+	noOpBytes, err := hex.DecodeString(cmdsTest.NoOp)
+	assert.NoError(err)
+	cmd, err := cmds.FromBytes(noOpBytes)
+	assert.NoError(err)
+	_, ok := cmd.(*NoOp)
+	assert.True(ok)
+
+	disconnectBytes, err := hex.DecodeString(cmdsTest.Disconnect)
+	assert.NoError(err)
+	cmd, err = cmds.FromBytes(disconnectBytes)
+	assert.NoError(err)
+	_, ok = cmd.(*Disconnect)
+	assert.True(ok)
+
+	sphinxPacket, err := hex.DecodeString(cmdsTest.SendPacketPayload)
+	assert.NoError(err)
+	sendPacketCommand, err := hex.DecodeString(cmdsTest.SendPacket)
+	assert.NoError(err)
+	sendPacket := &SendPacket{SphinxPacket: sphinxPacket, Cmds: cmds}
+	sendPacketBytes := sendPacket.ToBytes()
+	assert.Equal(sendPacketBytes[:len(sendPacketCommand)], sendPacketCommand)
+	assert.True(util.CtIsZero(sendPacketBytes[len(sendPacketCommand):]), "SendPacket: ToBytes() padding must be zero")
+
+	retrieveMessage := &RetrieveMessage{Sequence: cmdsTest.RetrieveMessageSeq, Cmds: cmds}
+	retrieveMessageBytes := retrieveMessage.ToBytes()
+	retrieveMessageWant, err := hex.DecodeString(cmdsTest.RetrieveMessage)
+	assert.NoError(err)
+	assert.Equal(retrieveMessageBytes[:len(retrieveMessageWant)], retrieveMessageWant)
+	assert.True(util.CtIsZero(retrieveMessageBytes[len(retrieveMessageWant):]), "RetrieveMessage: ToBytes() padding must be zero")
+
+	messageWant, err := hex.DecodeString(cmdsTest.Message)
+	assert.NoError(err)
+
+	msgPayload, err := hex.DecodeString(cmdsTest.MessagePayload)
+	assert.NoError(err)
+	message := &Message{
+		Geo:  geo,
+		Cmds: cmds,
+
+		Sequence: cmdsTest.MessageSeq,
+		Payload:  msgPayload,
+	}
+	messageCmd := message.ToBytes()
+	assert.Equal(messageCmd[:len(messageWant)], messageWant)
+	assert.True(util.CtIsZero(messageCmd[len(messageWant):]), "Message: ToBytes() padding must be zero")
+
+	getConsensusWant, err := hex.DecodeString(cmdsTest.GetConsensus)
+	assert.NoError(err)
+	getConsensus := &GetConsensus{
+		Epoch: cmdsTest.GetConsensusEpoch,
+		Cmds:  cmds,
+	}
+	getConsensusCmd := getConsensus.ToBytes()
+	assert.Equal(getConsensusCmd, getConsensusWant)
+
+	consensusWant, err := hex.DecodeString(cmdsTest.Consensus)
+	assert.NoError(err)
+	consensusPayload, err := hex.DecodeString(cmdsTest.ConsensusPayload)
+	assert.NoError(err)
+	consensus := &Consensus{
+		Payload:   consensusPayload,
+		ErrorCode: cmdsTest.ConsensusErrorCode,
+	}
+	consensusCmd := consensus.ToBytes()
+	assert.Equal(consensusCmd, consensusWant)
+}

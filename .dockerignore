@@ -2,9 +2,15 @@
 .git
 .gitignore
 
-# Go build artifacts in local workspace
+# Build artifacts / logs
 *.test
+*.log
 
-# Documentation
-*.md
-LICENSE
+# Never needed inside the image
+config/
+dashboard/
+zkn-anon-rpc-worker/
+scripts/
+kps-client/
+kps-sendtx/
+node_modules/

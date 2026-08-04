@@ -31,11 +31,9 @@ fi
 ok "Docker running"
 
 if [ ! -f katzenpost/go.mod ]; then
-  echo "  Cloning katzenpost submodule..."
-  git submodule update --init --recursive 2>&1 || fail "git submodule failed"
-  ok "katzenpost submodule cloned"
+  fail "katzenpost/ source missing. Run: git submodule update --init"
 else
-  ok "katzenpost submodule present"
+  ok "katzenpost source present (vendored)"
 fi
 
 # ── 1. Build mixnet Docker image ──────────────────────────────────
@@ -51,24 +49,9 @@ else
   ok "mixnet image built: $MIXNET_IMAGE"
 fi
 
-# ── 2. Build walletshield binary ──────────────────────────────────
-
-echo ""
-echo "── Building walletshield ──"
-WS_BIN="config/mixnet/client/walletshield-kps"
-if [ -x "$WS_BIN" ]; then
-  ok "walletshield-kps binary present"
-else
-  echo "  Building walletshield (Docker, first time: ~3 min)..."
-  WS_IMG="walletshield-build:local"
-  docker build -t "$WS_IMG" -f Dockerfile.walletshield.local . 2>&1 || fail "walletshield build failed"
-  CID=$(docker create "$WS_IMG" 2>/dev/null)
-  docker cp "$CID:/usr/local/bin/walletshield" "$WS_BIN" 2>/dev/null || fail "copy walletshield binary failed"
-  docker rm "$CID" >/dev/null 2>&1
-  ok "walletshield-kps built -> $WS_BIN"
-fi
-
-# ── 3. Build Go tools (kps-monitor, kps-client, kps-sendtx) ──────
+# ── 2. Build Go tools (kps-client, kps-sendtx) ────────────────────
+# walletshield-kps and kps-monitor are baked into the mixnet image
+# (/usr/local/bin/*) by Dockerfile.mixnet, so no separate build is needed.
 
 echo ""
 echo "── Building Go tools ──"
@@ -87,7 +70,6 @@ build_go_binary() {
   fi
 }
 
-build_go_binary kps-monitor  kps-monitor
 build_go_binary kps-client   kps-client
 build_go_binary kps-sendtx   kps-sendtx
 
@@ -149,25 +131,29 @@ fi
 
 echo ""
 echo "── Waiting for PKI consensus ──"
+echo "    (first boot on a fresh network can take up to ~30 min;"
+echo "     subsequent boots use the persisted PKI state and are fast)"
 
 PKI_OK="no"
-for i in $(seq 1 120); do
-  if docker logs mix-client 2>&1 | grep -q "PKI doc available"; then
+START_TS=$(date +%s)
+for i in $(seq 1 360); do
+  if docker exec mix-client sh -c "/usr/local/bin/fetch -f /var/lib/katzenpost/client/thinclient.toml" >/dev/null 2>&1; then
     PKI_OK="yes"
     break
   fi
-  sleep 3
+  if [ $(( i % 24 )) -eq 0 ]; then
+    echo "    ... still waiting for PKI consensus ($(( ( $(date +%s) - START_TS ) / 60 ))m elapsed)"
+  fi
+  if [ $(( $(date +%s) - START_TS )) -ge 1800 ]; then
+    break
+  fi
+  sleep 5
 done
 
 if [ "$PKI_OK" = "yes" ]; then
   ok "PKI consensus reached"
 else
-  # Check if consensus exists despite log message missing
-  if docker exec mix-client sh -c "/usr/local/bin/fetch -f /var/lib/katzenpost/client/thinclient.toml" 2>/dev/null; then
-    ok "PKI doc available (manual fetch)"
-  else
-    warn "PKI still converging — services may take longer"
-  fi
+  warn "PKI still converging — services may take longer. Re-run ./start.sh to retry."
 fi
 
 # ── 7. Start services ─────────────────────────────────────────────

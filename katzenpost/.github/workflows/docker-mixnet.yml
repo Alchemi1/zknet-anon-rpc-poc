@@ -1,0 +1,100 @@
+name: docker mixnet integration tests
+on: [pull_request]
+jobs:
+
+  test_e2e_client:
+    permissions:
+      contents: read
+      packages: write
+    env:
+      warped: true
+      no_mixdecoy: true
+      no_decoy: true
+      epoch_duration: 2m
+      no_metrics: true
+    strategy:
+      matrix:
+        go-version: [1.26.x]
+        os: [ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install CA certificates
+        if: ${{ env.ACT }}
+        run: |
+          # CA certs are mounted from host, just ensure they're linked properly
+          if [ -d /etc/ssl/certs ] && [ -f /etc/ssl/certs/ca-certificates.crt ]; then
+            echo "CA certificates already available"
+          else
+            apt update && apt install -y ca-certificates build-essential gcc g++ make
+            update-ca-certificates podman
+          fi
+        continue-on-error: true
+
+      - name: Configure podman socket
+        run: |
+          systemctl --user start podman.socket || true
+
+      - name: Log in to GitHub Container Registry
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Build and start the mixnet
+        run: |
+          cd docker && make start wait
+
+      - name: Sleep for a few seconds to allow the mixnet to fully start
+        run: sleep 5
+
+      # Print each daemon's startup self-check sidecar so an operator
+      # can copy the numbers into a committed cache and short-circuit
+      # the live measurement on future CI runs. The sidecars are
+      # written by every replica and every mix/gateway/service node
+      # the first time it boots on a fresh DataDir; their contents are
+      # also bundled into the testnet-state artifact below for download.
+      - name: Print selfcheck.toml from every daemon
+        if: always()
+        run: |
+          cd docker
+          shopt -s nullglob
+          found=0
+          for f in voting_mixnet/*/selfcheck.toml; do
+            found=1
+            echo "=== $f ==="
+            cat "$f" || echo "(unreadable: $f)"
+            echo
+          done
+          if [ "$found" -eq 0 ]; then
+            echo "no selfcheck.toml files were written; the mixnet may have failed to start"
+          fi
+
+      - name: run all docker integration tests in parallel
+        run: cd client && make dockertest-all
+
+      - name: Dump kpclientd logs on failure
+        if: failure()
+        run: |
+          cd docker && make client-logs-snapshot
+
+      - name: Dump replica logs on failure
+        if: failure()
+        run: |
+          cd docker && ls -la voting_mixnet/replica1/ && \
+          for r in voting_mixnet/replica*/; do echo "=== $r ===" && cat "${r}katzenpost.log" 2>&1 | tail -20 || echo "no log file"; done && \
+          cd voting_mixnet && podman compose ps -a 2>&1 | head -30 && \
+          podman compose logs --tail 30 replica1 replica2 replica3 replica4 replica5 2>&1 | tail -100
+
+      - name: Stop the mixnet
+        run: |
+          cd docker && make stop
+
+      - name: Upload testnet state
+        uses: actions/upload-artifact@v4
+        if: always() && !env.ACT
+        with:
+          name: mixnet-${{ github.run_id }}-${{ github.job }}
+          path: |
+            docker/voting_mixnet/*/*.log
+            docker/voting_mixnet/servicenode*/courier/courier.log
+            docker/voting_mixnet/*/selfcheck.toml

@@ -31,14 +31,27 @@ RUN mkdir /dest && \
     export CGO_ENABLED=1 && \
     for cmd in dirauth server courier echo-plugin http-proxy-server http-proxy-client kpclientd fetch; do \
         cd /src/katzenpost/cmd/$cmd && \
-        go build -trimpath -ldflags="-buildid=" -o /dest/$cmd . && \
+        go build -buildvcs=false -trimpath -ldflags="-buildid=" -o /dest/$cmd . && \
         echo "  built $cmd"; \
     done
+
+COPY walletshield/ /src/walletshield/
+WORKDIR /src/walletshield
+RUN export CGO_ENABLED=1 && \
+    go build -buildvcs=false -trimpath -ldflags="-buildid=" -o /dest/walletshield-kps . && \
+    echo "  built walletshield-kps"
+
+COPY kps-monitor/ /src/kps-monitor/
+WORKDIR /src/kps-monitor
+RUN export CGO_ENABLED=1 && \
+    go build -buildvcs=false -trimpath -ldflags="-buildid=" -o /dest/kps-monitor . && \
+    echo "  built kps-monitor"
 
 FROM debian:trixie-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    adduser \
     libsnappy1v5 \
     liblz4-1 \
     libzstd1 \
@@ -51,4 +64,7 @@ COPY --from=builder /dest/* /usr/local/bin/
 
 RUN ldconfig
 
-USER app
+# NOTE: the mixnet daemons run as root because they must read/write the
+# host bind-mounted config volume (owned by the host user) and the
+# per-node runtime state (logs, mixkey files, persistence DBs) in it.
+USER root

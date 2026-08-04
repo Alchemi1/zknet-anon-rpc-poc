@@ -1,0 +1,45 @@
+name: linux unit tests
+on: [pull_request]
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        arch: [amd64]
+        go-version: ["1.26.x"]
+        test-suite:
+          - { name: "authority", path: "authority", timeout: "30m" }
+          - { name: "client", path: "client", timeout: "30m" }
+          - { name: "core", path: "core", timeout: "30m" }
+          - { name: "sphinx", path: "core/sphinx", timeout: "30m" }
+          - { name: "server", path: "server", timeout: "30m" }
+          - { name: "courier", path: "courier", timeout: "30m" }
+          - { name: "pigeonhole", path: "pigeonhole", timeout: "30m" }
+    runs-on: ${{ matrix.os }}
+    name: test-${{ matrix.test-suite.name }}
+    steps:
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go-version }}
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ runner.os }}-go-${{ matrix.go-version }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: |
+            ${{ runner.os }}-go-${{ matrix.go-version }}-
+            ${{ runner.os }}-go-
+
+      - name: Generate mixnet configuration
+        run: cd cmd/genconfig && go build && ./genconfig --wirekem xwing --voting --baseDir /conf --outDir ../../docker/voting_mixnet/
+
+      - name: Run ${{ matrix.test-suite.name }} unit tests
+        run: cd ${{ matrix.test-suite.path }} && GORACE=history_size=7 go test -coverprofile=coverage.out -race -v -failfast -timeout ${{ matrix.test-suite.timeout }} ./...

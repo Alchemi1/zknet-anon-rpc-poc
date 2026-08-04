@@ -1,0 +1,393 @@
+// crypto_worker.go - Katzenpost server crypto worker.
+// Copyright (C) 2017  Yawning Angel.
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License as
+// published by the Free Software Foundation, either version 3 of the
+// License, or (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+// Package cryptoworker implements the Katzenpost Sphinx crypto worker.
+package cryptoworker
+
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	"gopkg.in/op/go-logging.v1"
+
+	"github.com/katzenpost/katzenpost/core/epochtime"
+	"github.com/katzenpost/katzenpost/core/sphinx"
+	"github.com/katzenpost/katzenpost/core/worker"
+	"github.com/katzenpost/katzenpost/server/internal/constants"
+	"github.com/katzenpost/katzenpost/server/internal/glue"
+	"github.com/katzenpost/katzenpost/server/internal/instrument"
+	"github.com/katzenpost/katzenpost/server/internal/mixkey"
+	"github.com/katzenpost/katzenpost/server/internal/packet"
+)
+
+// Worker is a Sphinx crypto worker instance.
+type Worker struct {
+	worker.Worker
+
+	sphinx *sphinx.Sphinx
+
+	glue glue.Glue
+	log  *logging.Logger
+
+	mixKeys map[uint64]*mixkey.MixKey
+
+	incomingCh <-chan interface{}
+	updateCh   chan bool
+}
+
+// UpdateMixKeys forces the Worker to re-shadow it's copy of the mix key(s).
+func (w *Worker) UpdateMixKeys() {
+	// This is a blocking call, because bad things will happen if the keys
+	// happen to get out of sync.
+	w.updateCh <- true
+}
+
+func (w *Worker) doUnwrap(pkt *packet.Packet) error {
+	// Figure out the candidate mix private keys for this packet.
+	// The current epoch is always tried first; when available, the
+	// previous and next epoch keys are also tried so that packets
+	// straddling an epoch boundary do not MAC-fail. The earlier
+	// design gated the neighbour keys on a fixed 2-minute grace
+	// period and used an if/else if, which had two failure modes:
+	//
+	//   1. With warped 2-minute epochs the grace period equals the
+	//      epoch period, so `elapsed < gracePeriod` is true almost
+	//      always; the `else if till < gracePeriod` branch is
+	//      unreachable and the next epoch's key is never accepted.
+	//      This produces a recurring burst of MAC-mismatch drops at
+	//      each epoch boundary that the docker mixnet has been
+	//      living with.
+	//
+	//   2. Under any epoch length the if/else if forces a directional
+	//      choice: a packet built with the new epoch's key arriving
+	//      at a mix still in the old epoch cannot decrypt with
+	//      either current or previous, only with next.
+	//
+	// The cost of always trying neighbour keys is bounded by two
+	// extra Sphinx unwrap attempts on the failure path only; on the
+	// success path the first matching key short-circuits the loop.
+	// Replay protection is unaffected because each MixKey carries
+	// its own tag store and a packet's MAC is valid under exactly
+	// one key.
+	keys := make([]*mixkey.MixKey, 0, 3)
+	epoch, _, _ := epochtime.Now()
+	k, ok := w.mixKeys[epoch]
+	if !ok || k == nil {
+		// There always will be a key for the current epoch, since
+		// key generation happens multiple epochs in advance.
+		return fmt.Errorf("crypto: No key for epoch %v", epoch)
+	}
+	keys = append(keys, k)
+
+	// Append the previous epoch's key when available. Uses
+	// epoch-1 with wraparound semantics; if epoch is zero the map
+	// lookup simply returns "not found" and the append is skipped.
+	if prev, ok := w.mixKeys[epoch-1]; ok && prev != nil {
+		keys = append(keys, prev)
+	}
+
+	// Append the next epoch's key when available. The PKI worker
+	// pre-generates keys for [epoch, epoch+1, epoch+2] so the
+	// next-epoch key is usually present even mid-epoch.
+	if next, ok := w.mixKeys[epoch+1]; ok && next != nil {
+		keys = append(keys, next)
+	}
+
+	var lastErr error
+	for _, k = range keys {
+		startAt := time.Now()
+
+		// TODO/perf: payload is a new heap allocation if it's returned,
+		// though that should only happen if this is a provider.
+		payload, tag, cmds, err := w.sphinx.Unwrap(k.PrivateKey(), pkt.Raw)
+		unwrapAt := time.Now()
+
+		w.log.Debugf("Packet: %v (Unwrap took: %v)", pkt.ID, unwrapAt.Sub(startAt))
+
+		lastErr = err
+		// Decryption failures can result from picking the wrong key.
+		if err != nil {
+			// So save the error and try the next key if possible.
+			continue
+		}
+
+		// Stash the payload commands.  Even if we end up rejecting the
+		// packet, pkt.dispose() has to get a chance to deallocate them
+		// nicely.
+		if err = pkt.Set(payload, cmds); err != nil {
+			lastErr = err
+			break
+		}
+
+		// Check for replayed packets.
+		if k.IsReplay(tag) {
+			// The packet decrypted successfully, the MAC was valid, and the
+			// tag was seen before, therefore drop the packet as a replay.
+			lastErr = errors.New("crypto: Packet is a replay")
+			instrument.PacketsReplayed()
+			break
+		}
+
+		w.log.Debugf("Packet: %v (IsReplay took: %v)", pkt.ID, time.Since(unwrapAt))
+
+		instrument.SphinxUnwraps()
+		return nil
+	}
+
+	// Return the last error to signal Unwrap() failure.
+	if lastErr == nil {
+		lastErr = errors.New("BUG: crypto: Out of candidate keys for Unwrap(), no saved error")
+	}
+	return lastErr
+}
+
+func (w *Worker) worker() {
+	unwrapSlack := time.Duration(w.glue.Config().Debug.UnwrapDelay) * time.Millisecond
+	defer w.derefKeys()
+
+	for {
+		// This is where the bulk of the inbound packet processing happens,
+		// and the only significant source of parallelism.
+		var pkt *packet.Packet
+
+		select {
+		case <-w.HaltCh():
+			w.log.Debugf("Terminating gracefully.")
+			return
+		case <-w.updateCh:
+			w.log.Debugf("Updating mix keys.")
+			w.glue.MixKeys().Shadow(w.mixKeys)
+			continue
+		case e := <-w.incomingCh:
+			pkt = e.(*packet.Packet)
+			// Report the remaining channel depth after this
+			// dequeue. The pre-decoy-observability gauge
+			// (katzenpost_channel_usage) was registered without
+			// any setter wired; this is the one place it makes
+			// sense for a mix node, where the depth is a direct
+			// indicator of producer-side back-pressure.
+			instrument.GaugeChannelLength("cryptoworker_incoming", len(w.incomingCh))
+		}
+
+		// This deliberately ignores the cryptographic processing time, since
+		// it (should) be constant across packets, and I'll go crazy trying
+		// to account for everything that impacts the actual delay vs
+		// requested.
+		startAt := time.Now()
+
+		// Drop the packet if it has been sitting in the queue waiting to
+		// be unwrapped for way too long.
+		dwellTime := startAt.Sub(pkt.RecvAt)
+		if dwellTime > unwrapSlack {
+			w.log.Debugf("Dropping packet: %v (Spent %v waiting for Unwrap())", pkt.ID, dwellTime)
+			instrument.PacketsDropped()
+			instrument.PacketsDroppedByReason("unwrap_dwell_exceeded")
+			pkt.Dispose()
+			continue
+		} else {
+			w.log.Debugf("Packet: %v (Unwrap queue delay: %v)", pkt.ID, dwellTime)
+		}
+
+		// Attempt to unwrap the packet.
+		w.log.Debugf("Attempting to unwrap packet: %v", pkt.ID)
+		if err := w.doUnwrap(pkt); err != nil {
+			w.log.Debugf("Dropping packet: %v (%v)", pkt.ID, err)
+			instrument.PacketsDropped()
+			instrument.PacketsDroppedByReason("unwrap_failed")
+			pkt.Dispose()
+			continue
+		}
+		w.log.Debugf("Packet: %v (doUnwrap took: %v)", pkt.ID, time.Since(startAt))
+
+		w.routePacket(pkt, startAt)
+	}
+
+	// NOTREACHED
+}
+
+func (w *Worker) routePacket(pkt *packet.Packet, startAt time.Time) {
+	const absoluteMinimumDelay = 1 * time.Millisecond
+
+	isGatewayNode := w.glue.Config().Server.IsGatewayNode
+	isServiceNode := w.glue.Config().Server.IsServiceNode
+	dwellTime := startAt.Sub(pkt.RecvAt)
+
+	// The common (in the both most likely, and done by all modes) case
+	// is that the packet is destined for another node.
+	if pkt.IsForward() {
+		if pkt.Payload != nil {
+			w.log.Debugf("Dropping packet: %v (Unwrap() returned payload)", pkt.ID)
+			instrument.PacketsDropped()
+			instrument.PacketsDroppedByReason("unwrap_payload_unexpected")
+			pkt.Dispose()
+			return
+		}
+		if pkt.MustTerminate {
+			w.log.Debugf("Dropping packet: %v (Provider received forward packet from mix)", pkt.ID)
+			instrument.PacketsDropped()
+			instrument.PacketsDroppedByReason("provider_forward_from_mix")
+			pkt.Dispose()
+			return
+		}
+
+		// Check and adjust the delay for queue dwell time.
+		pkt.Delay = time.Duration(pkt.NodeDelay.Delay) * time.Millisecond
+		if pkt.Delay > constants.NumMixKeys*epochtime.Period {
+			w.log.Debugf("Dropping packet: %v (Delay1 %v is past what is possible)", pkt.ID, pkt.Delay)
+			instrument.PacketsDropped()
+			instrument.PacketsDroppedByReason("delay_impossible")
+			pkt.Dispose()
+			return
+		}
+		if pkt.Delay > dwellTime {
+			pkt.Delay -= dwellTime
+		} else if pkt.NodeDelay.Delay == 0 {
+			// If the packet has exactly 0 ms delay, then it is flat out
+			// impossible to adjust for the dwell because the client wants
+			// the packet dispatched immediately.
+			//
+			// Note: The reference client will NEVER do this, so despite
+			// the general crypto worker load shedding not kicking in,
+			// a more stringent limit on queue dwell time is applied.
+			if dwellTime < absoluteMinimumDelay {
+				// If the dwellTime is "small" (in the non-overload case),
+				// treat the packet as if it had a 1 ms delay to force
+				// some amount of mixing.
+				pkt.Delay = absoluteMinimumDelay - dwellTime
+			} else {
+				// Although the node isn't overloaded to the point
+				// where the load shedding has kicked in, the dwell
+				// time appears to be "excessive".  Discard the packet,
+				// the client is doing something non-standard anyway.
+				w.log.Debugf("Dropping packet: %v (Delay2 0 queue delay: %v)", pkt.ID, dwellTime)
+				instrument.PacketsDropped()
+				instrument.PacketsDroppedByReason("zero_delay_excessive_dwell")
+				pkt.Dispose()
+				return
+			}
+		} else {
+			// The dwell time has exceeded the client requested delay.
+			//
+			// Under normal operation this should NEVER happen, because
+			// the dwell time should be extremely small, and the
+			// accounting here explicitly excludes the time taken for
+			// the Unwrap operation.
+			//
+			// The right thing to do here might be to dispose of the
+			// packet, but the adjustment is primarily a "best effort"
+			// attempt to honor the delay, and the queue backlog hasn't
+			// gotten to the point where the worker is aggressively
+			// shedding load.
+			//
+			// Do the closest thing to "dispatch immediately" that
+			// ensures that some mixing occurs.  The adjustment is
+			// "best effort" anyway.
+			pkt.Delay = absoluteMinimumDelay
+		}
+
+		// Hand off to the scheduler.
+		w.log.Debugf("Dispatching packet: %v", pkt.ID)
+		w.glue.Scheduler().OnPacket(pkt)
+		return
+	} else {
+		if !isGatewayNode && !isServiceNode {
+			// We're not a Gateway or Service node and this packet doesn't
+			// need to be routed to the next hop so the only legit reason
+			// to recieve a packet would be if it's a SURB reply to our
+			// mix loop decoys.
+			if pkt.IsSURBReply() && w.glue.Decoy().ExpectReply(pkt) {
+				w.log.Debugf("Handing off decoy response packet: %v", pkt.ID)
+				w.glue.Decoy().OnPacket(pkt)
+				return
+			}
+
+			// Mixes will only ever see forward commands.
+			w.log.Errorf("Dropping mix packet that should not have been received: %v (%v)", pkt.ID, pkt.CmdsToString())
+			instrument.PacketsDropped()
+			instrument.PacketsDroppedByReason("mix_received_non_forward")
+			pkt.Dispose()
+			return
+		}
+	}
+
+	// This node is a provider and the packet is not destined for another
+	// node.  Both of the operations here end up hitting up disk among
+	// other things, so are just shunted off to a separate worker so that
+	// packet processing does not get blocked.
+
+	if pkt.MustForward {
+		w.log.Errorf("Dropping client packet: %v (Send to local user)", pkt.ID)
+		instrument.PacketsDropped()
+		instrument.PacketsDroppedByReason("client_to_local_user")
+		pkt.Dispose()
+		return
+	}
+
+	// Toss the packets over to the gateway/serviceNode backend.
+	// Note: Callee takes ownership of pkt.
+
+	if pkt.IsSURBReply() && w.glue.Decoy().ExpectReply(pkt) {
+		w.log.Debugf("Handing off decoy response packet: %v", pkt.ID)
+		w.glue.Decoy().OnPacket(pkt)
+		return
+	}
+
+	if isGatewayNode {
+		w.log.Debugf("Handing off user destined packet: %v", pkt.ID)
+		pkt.DispatchAt = startAt
+		w.glue.Gateway().OnPacket(pkt)
+		return
+	}
+
+	if isServiceNode {
+		w.log.Debugf("Handing off service destined packet: %v", pkt.ID)
+		pkt.DispatchAt = startAt
+		w.glue.ServiceNode().OnPacket(pkt)
+		return
+	}
+
+	w.log.Errorf("Invalid packet, dropping packet: %v (%v)", pkt.ID, pkt.CmdsToString())
+	instrument.PacketsDropped()
+	instrument.PacketsDroppedByReason("invalid_packet")
+	pkt.Dispose()
+}
+
+func (w *Worker) derefKeys() {
+	for _, v := range w.mixKeys {
+		v.Deref()
+	}
+}
+
+// New constructs a new Worker instance.
+func New(glue glue.Glue, incomingCh <-chan interface{}, id int) *Worker {
+	s, err := sphinx.FromGeometry(glue.Config().SphinxGeometry)
+	if err != nil {
+		panic(err)
+	}
+	w := &Worker{
+		glue:       glue,
+		log:        glue.LogBackend().GetLogger(fmt.Sprintf("crypto:%d", id)),
+		mixKeys:    make(map[uint64]*mixkey.MixKey),
+		incomingCh: incomingCh,
+		updateCh:   make(chan bool),
+		sphinx:     s,
+	}
+
+	w.glue.MixKeys().Shadow(w.mixKeys)
+	w.Go(w.worker)
+	return w
+}
