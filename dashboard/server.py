@@ -207,7 +207,7 @@ class DashboardHandler(http.server.SimpleHTTPRequestHandler):
             try:
                 r = subprocess.run(
                     ["docker", "exec", "mix-client", "sh", "-c",
-                     "grep 'PKI doc epoch' /tmp/wl4.log /tmp/walletshield.log 2>/dev/null | tail -1"],
+                     "grep 'PKI doc epoch' /var/lib/katzenpost/client/walletshield.log 2>/dev/null | tail -1"],
                     capture_output=True, text=True, timeout=5
                 )
                 m = re.search(r"epoch=(\d+)", r.stdout)

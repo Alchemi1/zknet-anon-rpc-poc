@@ -118,6 +118,33 @@ for container in mix-dirauth-1 mix-dirauth-2 mix-dirauth-3 \
 done
 ok "all 9 containers up"
 
+# ── 5b. Ensure container DNS ───────────────────────────────────────
+# After host reboot / docker recreation, some containers can end up with an
+# empty /etc/resolv.conf (no nameservers), which breaks the servicenode's
+# http_proxy upstream lookups (DNS resolution of the RPC endpoint). Fix by
+# writing the host's nameservers into any container missing them.
+
+echo ""
+echo "── Ensuring container DNS ──"
+HOST_NS=$(grep -m3 '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | head -3)
+if [ -z "$HOST_NS" ]; then
+  warn "host has no nameservers in /etc/resolv.conf — skipping DNS fix"
+else
+  NS_ENTRIES=$(printf 'nameserver %s\n' $HOST_NS)
+  DNS_FIXED=0
+  for container in mix-dirauth-1 mix-dirauth-2 mix-dirauth-3 \
+                   mix-1 mix-2 mix-3 mix-gateway mix-servicenode mix-client; do
+    if ! docker exec "$container" sh -c "grep -q '^nameserver' /etc/resolv.conf" 2>/dev/null; then
+      docker exec "$container" sh -c "printf '%b\n' '$NS_ENTRIES' > /etc/resolv.conf"
+      ok "$container: resolv.conf fixed ($(echo $HOST_NS | tr ' ' ', '))"
+      DNS_FIXED=1
+    fi
+  done
+  if [ "$DNS_FIXED" -eq 0 ]; then
+    ok "all containers have nameservers"
+  fi
+fi
+
 # ── 6. Wait for PKI consensus ─────────────────────────────────────
 
 echo ""
@@ -159,12 +186,14 @@ else
   ok "http-proxy-client started on :9205"
 fi
 
-# walletshield-kps (inside mix-client, binary in config volume)
+# walletshield-kps (inside mix-client; binary baked into image at /usr/local/bin)
+# NOTE: must run with cwd=/var/lib/katzenpost/client so the relative kps.key
+# path resolves and the KPS listener (:9201/UDP) binds correctly.
 if docker exec mix-client sh -c "pidof walletshield-kps >/dev/null 2>&1" 2>/dev/null; then
   ok "walletshield-kps already running"
 else
-  docker exec -d mix-client \
-    /var/lib/katzenpost/client/walletshield-kps \
+  docker exec -d -w /var/lib/katzenpost/client mix-client \
+    /usr/local/bin/walletshield-kps \
     -config /var/lib/katzenpost/client/thinclient.toml \
     -listen 127.0.0.1:9200 \
     -kps_listen 0.0.0.0:9201 \
@@ -172,26 +201,16 @@ else
   ok "walletshield-kps started :9200 (KPS :9201)"
 fi
 
-# kps-monitor (inside mix-client)
+# kps-monitor (inside mix-client; binary baked into image at /usr/local/bin)
 if docker exec mix-client sh -c "pidof kps-monitor >/dev/null 2>&1" 2>/dev/null; then
   ok "kps-monitor already running"
 else
-  # Copy kps-monitor binary into the config volume so it's available inside the container
-  KPSM_SRC="$PROJECT_DIR/kps-monitor/kps-monitor"
-  KPSM_DST="config/mixnet/client/kps-monitor"
-  if [ -x "$KPSM_SRC" ] && [ ! -x "$KPSM_DST" ]; then
-    cp "$KPSM_SRC" "$KPSM_DST"
-  fi
-  if [ -x "$KPSM_DST" ]; then
-    docker exec -d mix-client \
-      /var/lib/katzenpost/client/kps-monitor \
-      -boot http://127.0.0.1:9200 \
-      -http :9206 \
-      -interval 15s
-    ok "kps-monitor started on :9206"
-  else
-    warn "kps-monitor binary not found — skipping (build with: docker run --rm -v \$PWD/kps-monitor:/src -w /src golang:latest go build -o kps-monitor .)"
-  fi
+  docker exec -d mix-client \
+    /usr/local/bin/kps-monitor \
+    -boot http://127.0.0.1:9200 \
+    -http :9206 \
+    -interval 15s
+  ok "kps-monitor started on :9206"
 fi
 
 # ── 8. Dashboard ──────────────────────────────────────────────────
